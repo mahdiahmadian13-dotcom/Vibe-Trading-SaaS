@@ -1,0 +1,4 @@
+# Bot requirements
+aiogram>=3.15.0
+httpx>=0.28.0
+redis[hiredis]>=5.2.0

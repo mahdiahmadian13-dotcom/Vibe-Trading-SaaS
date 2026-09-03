@@ -1,0 +1,28 @@
+# ============================================================================
+# Vibe-Trading SaaS — Remote Worker (connects to central Redis)
+# ============================================================================
+# Usage on remote server:
+#   BROKER_URL=redis://CENTRAL_IP:6379 docker compose -f docker-compose.worker.yml up -d
+# ============================================================================
+
+services:
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=${BROKER_URL:?Set BROKER_URL=redis://CENTRAL_IP:6379}
+      - WORKER_NAME=worker-${SERVER_ID:-$(hostname)}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
+      - WORKER_MAX_TASKS=${WORKER_MAX_TASKS:-100}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "${CPU_LIMIT:-2.0}"
+          memory: "${MEM_LIMIT:-2G}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis; r = redis.Redis.from_url('${BROKER_URL}'); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
