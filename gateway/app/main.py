@@ -35,7 +35,7 @@ from shared.security import (
 # ============================================================================
 
 PLAN_LIMITS = {
-    PlanTier.FREE:       {"sessions_per_day": 3,   "messages_per_day": 30,  "backtests_per_day": 1,   "swarm_per_day": 0,  "live": False},
+    PlanTier.FREE:       {"sessions_per_day": 50,  "messages_per_day": 500, "backtests_per_day": 20, "swarm_per_day": 5,  "live": False},
     PlanTier.BASIC:      {"sessions_per_day": 20,  "messages_per_day": 150, "backtests_per_day": 10,  "swarm_per_day": 3,  "live": False},
     PlanTier.PRO:        {"sessions_per_day": 100, "messages_per_day": 500, "backtests_per_day": 50,  "swarm_per_day": 20, "live": True},
     PlanTier.ENTERPRISE: {"sessions_per_day": -1,  "messages_per_day": -1,  "backtests_per_day": -1,  "swarm_per_day": -1, "live": True},
@@ -613,3 +613,101 @@ async def admin_list_tasks(
         select(Task).order_by(Task.created_at.desc()).limit(100)
     )
     return result.scalars().all()
+
+
+# ============================================================================
+# Run Detail Proxy (full backtest report)
+# ============================================================================
+
+@app.get("/api/v1/vibe/runs/{run_id}")
+async def get_run_detail(
+    run_id: str,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get full backtest run detail with metrics, equity curve, trade log."""
+    vibe = get_vibe()
+    return await vibe.request("GET", f"/runs/{run_id}")
+
+
+# ============================================================================
+# Alpha Zoo Proxy (browse / detail / bench)
+# ============================================================================
+
+@app.get("/api/v1/vibe/alpha/list")
+async def alpha_list(
+    zoo: str | None = Query(None),
+    user: User = Depends(require_auth),
+):
+    vibe = get_vibe()
+    params = {"zoo": zoo} if zoo else {}
+    return await vibe.request("GET", "/alpha/list", params=params)
+
+
+@app.get("/api/v1/vibe/alpha/{alpha_id}")
+async def alpha_detail(
+    alpha_id: str,
+    user: User = Depends(require_auth),
+):
+    vibe = get_vibe()
+    return await vibe.request("GET", f"/alpha/{alpha_id}")
+
+
+@app.post("/api/v1/vibe/alpha/bench")
+async def alpha_bench(
+    body: dict,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start an alpha bench job. Checks quota."""
+    await _check_limit(db, user, "backtest")
+    vibe = get_vibe()
+    result = await vibe.request("POST", "/alpha/bench", json=body)
+    return result
+
+
+@app.get("/api/v1/vibe/alpha/bench/{job_id}/stream")
+async def alpha_bench_stream(
+    job_id: str,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """SSE stream for alpha bench progress."""
+    await db.close()
+    settings = get_settings()
+    url = f"{settings.VIBE_ENGINE_URL}/alpha/bench/{job_id}/stream"
+    headers = {"Authorization": f"Bearer {settings.VIBE_ENGINE_API_KEY}"} if settings.VIBE_ENGINE_API_KEY else {}
+
+    async def event_generator():
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("GET", url, headers=headers) as resp:
+                async for line in resp.aiter_lines():
+                    yield f"{line}\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ============================================================================
+# Swarm presets with full detail (titles, agents, variables)
+# ============================================================================
+
+@app.get("/api/v1/vibe/swarm/runs")
+async def list_swarm_runs(
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    vibe = get_vibe()
+    runs = await vibe.request("GET", "/swarm/runs")
+
+    # Filter to user's swarm runs (multi-tenant)
+    result = await db.execute(
+        select(SwarmRun.swarm_run_id).where(SwarmRun.user_id == user.id)
+    )
+    owned = {row[0] for row in result.all()}
+    if not user.is_admin:
+        runs = [r for r in runs if r.get("id") in owned]
+    return runs

@@ -52,7 +52,7 @@ services:
       context: .
       dockerfile: gateway/Dockerfile
     ports:
-      - "0.0.0.0:9000:9000"
+      - "0.0.0.0:9001:9000"
     env_file:
       - .env
     environment:
@@ -77,6 +77,9 @@ services:
         limits:
           cpus: "2.0"
           memory: 1G
+    networks:
+      - default
+      - engine_net
 
   # ---------------------------------------------------------------------------
   # Telegram Bot
@@ -134,3 +137,8 @@ services:
 volumes:
   redis-data:
   pg-data:
+
+networks:
+  engine_net:
+    external: true
+    name: vibe-trading_default

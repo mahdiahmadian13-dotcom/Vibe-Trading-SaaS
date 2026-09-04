@@ -64,8 +64,8 @@ class User(Base):
     language = Column(String(10), default="fa")
     device_id = Column(String(128), nullable=True, index=True)
     telegram_id = Column(Integer, unique=True, nullable=True, index=True)
-    created_at = Column(DateTime, default=_utcnow)
-    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
     subscriptions = relationship("Subscription", back_populates="user", lazy="selectin")
     tasks = relationship("Task", back_populates="user", lazy="selectin")
@@ -87,9 +87,9 @@ class Subscription(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     plan_tier = Column(Enum(PlanTier), nullable=False)
     status = Column(Enum(SubscriptionStatus), default=SubscriptionStatus.ACTIVE)
-    started_at = Column(DateTime, default=_utcnow)
-    expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=_utcnow)
+    started_at = Column(DateTime(timezone=True), default=_utcnow)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     user = relationship("User", back_populates="subscriptions")
 
@@ -108,9 +108,9 @@ class Task(Base):
     error_message = Column(Text, nullable=True)
     worker_name = Column(String(128), nullable=True)
     progress = Column(JSON, nullable=True)
-    created_at = Column(DateTime, default=_utcnow)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="tasks")
 
@@ -126,7 +126,7 @@ class VibeSession(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     vibe_session_id = Column(String(256), unique=True, nullable=False, index=True)
-    created_at = Column(DateTime, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     user = relationship("User", back_populates="vibe_sessions")
 
@@ -156,7 +156,7 @@ class SwarmRun(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     swarm_run_id = Column(String(256), unique=True, nullable=False, index=True)
     preset_name = Column(String(128), nullable=False)
-    created_at = Column(DateTime, default=_utcnow)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
 # ============================================================================
