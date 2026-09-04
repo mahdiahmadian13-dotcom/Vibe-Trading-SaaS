@@ -424,7 +424,7 @@ async def list_runs(
     db: AsyncSession = Depends(get_db),
 ):
     vibe = get_vibe()
-    params = {}
+    params: dict = {"limit": 200}
     if session_id:
         params["session_id"] = session_id
     runs = await vibe.request("GET", "/runs", params=params)
