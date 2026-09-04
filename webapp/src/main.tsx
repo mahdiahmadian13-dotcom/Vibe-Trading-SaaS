@@ -6,7 +6,7 @@ import SwarmPage from "@/pages/SwarmPage";
 import { auth } from "@/api/client";
 import "@/index.css";
 
-const goLegacy = () => (location.href = "/app/legacy.html");
+const goLegacy = () => (location.href = "/app/legacy.html#reports");
 
 function App() {
   const [view, setView] = useState(() => (location.hash === "#swarm" ? "swarm" : "home"));
