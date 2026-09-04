@@ -1102,13 +1102,16 @@ async def cb_swarm_run(callback: CallbackQuery, state: FSMContext):
 # Dynamic Swarm Form — smart keyboards per common variable, text input otherwise
 # ============================================================================
 
+# Crypto-only suggestions for crypto presets
+TARGET_CRYPTO = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "TON", "TRX",
+                 "AVAX", "LINK", "DOT"]
+
+# Multi-asset list for generic presets (equities/commodities/FX)
+TARGET_MULTI = ["BTC", "ETH", "TSLA", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META",
+                "طلا", "نفت", "نقره", "EUR/USD", "GBP/USD", "USD/JPY", "NFLX", "AMD"]
+
 VAR_SUGGESTIONS = {
-    "target": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "TON", "TRX",
-               "AVAX", "LINK", "DOT",
-               # page 2: more crypto + popular US equities
-               "TSLA", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "NFLX", "AMD",
-               # page 3: commodities + FX
-               "طلا", "نفت", "نقره", "EUR/USD", "GBP/USD", "USD/JPY"],
+    "target": TARGET_MULTI,
     "timeframe": ["کوتاه‌مدت ۱-۴ هفته", "میان‌مدت ۱-۳ ماه", "بلندمدت ۳-۱۲ ماه"],
     "market": ["کریپتو", "سهام آمریکا", "سهام چین", "بازار جهانی چند-دارایی"],
     "goal": ["چشم‌انداز ماه آینده", "کشف فرصت‌های کم‌ارزش", "تحلیل ریسک پرتفوی", "انتخاب سهم ماهانه"],
@@ -1192,13 +1195,22 @@ def resolve_symbol(text: str) -> str | None:
     return None
 
 
-def _var_keyboard(var_name: str, page: int = 1, user_suggestions: list | None = None):
+CRYPTO_PRESETS = (
+    "crypto_research_lab", "crypto_trading_desk",
+)
+
+
+def _var_keyboard(var_name: str, page: int = 1, user_suggestions: list | None = None,
+                  preset_name: str = ""):
     """Keyboard for a swarm form variable with pagination (9 per page = 3x3).
 
     Always shows the page indicator row when suggestions exist, so the user
     sees the form is multi-page capable; ◀/▶ appear only when applicable.
+    For 'target' in crypto presets, only crypto assets are offered.
     """
     suggestions = user_suggestions or VAR_SUGGESTIONS.get(var_name, [])
+    if var_name == "target" and preset_name in CRYPTO_PRESETS:
+        suggestions = TARGET_CRYPTO
     rows = []
 
     PER_PAGE = 9  # 3 columns × 3 rows
@@ -1281,19 +1293,27 @@ async def _ask_next_swarm_var(callback_or_message, state: FSMContext, telegram_u
         f"💡 {desc}\n\n"
         f"📍 سوال {len(answers) + 1} از {len(variables)}"
     )
-    kb = _var_keyboard(name, page=1)
+    kb = _var_keyboard(name, page=1, preset_name=preset_name)
 
     msg = (
         callback_or_message.message
         if hasattr(callback_or_message, "message") and not hasattr(callback_or_message, "chat")
         else callback_or_message
     )
-    await msg.edit_text(ask_text, reply_markup=kb, parse_mode="Markdown")
+    # A user-sent message can never be edited — answer with a new message instead.
+    if hasattr(msg, "edit_text"):
+        try:
+            await msg.edit_text(ask_text, reply_markup=kb, parse_mode="Markdown")
+            await state.set_state(ChatState.swarm_var_input)
+            await state.update_data(sw_current_var=name)
+            if hasattr(callback_or_message, "answer"):
+                await callback_or_message.answer()
+            return
+        except Exception:
+            pass  # fall through to a fresh message
+    await msg.answer(ask_text, reply_markup=kb, parse_mode="Markdown")
     await state.set_state(ChatState.swarm_var_input)
     await state.update_data(sw_current_var=name)
-
-    if hasattr(callback_or_message, "answer"):
-        await callback_or_message.answer()
 
 
 @router.callback_query(F.data.startswith("svpage:"))
@@ -1320,7 +1340,8 @@ async def cb_svar_page(callback: CallbackQuery, state: FSMContext):
     )
     await callback.message.edit_text(
         ask_text,
-        reply_markup=_var_keyboard(var_name, page=page),
+        reply_markup=_var_keyboard(var_name, page=page,
+                                   preset_name=data.get("sw_preset", "")),
     )
     await state.update_data(sw_current_var=var_name)
     await state.set_state(ChatState.swarm_var_input)
