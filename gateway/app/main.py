@@ -843,7 +843,9 @@ async def run_chart(run_id: str, user: User = Depends(require_auth), db: AsyncSe
         fig.tight_layout()
         fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
         plt.close(fig)
-        return Response(content=buf.getvalue(), media_type="image/png")
+        # Immutable per run → let the browser cache it (repeat opens are instant)
+        return Response(content=buf.getvalue(), media_type="image/png",
+                        headers={"Cache-Control": "private, max-age=86400"})
     except Exception as exc:  # matplotlib missing → SVG fallback
         w, h = 640, 220
         lo, hi = min(equity), max(equity)
@@ -873,5 +875,8 @@ async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSess
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="backtest_{run_id}.pdf"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="backtest_{run_id}.pdf"',
+            "Cache-Control": "private, max-age=86400",
+        },
     )

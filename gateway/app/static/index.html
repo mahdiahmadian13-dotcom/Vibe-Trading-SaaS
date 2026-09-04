@@ -427,6 +427,8 @@ async function loadReports() {
 
 async function authDownload(url, filename) {
   // <a download> can't carry the Bearer token → fetch as blob with auth, then save
+  const btn = event && event.target;
+  if (btn) { btn.style.opacity = '.6'; btn.textContent = '⏳ در حال آماده‌سازی…'; }
   try {
     const t = localStorage.getItem('vt_token');
     const r = await fetch(url, {headers: {'Authorization': 'Bearer ' + t}});
@@ -441,6 +443,8 @@ async function authDownload(url, filename) {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   } catch (e) {
     alert('دانلود ناموفق: ' + e.message);
+  } finally {
+    if (btn) { btn.style.opacity = ''; btn.textContent = '📄 دانلود PDF'; }
   }
 }
 async function openReport(runId) {
@@ -462,7 +466,22 @@ async function openReport(runId) {
 
     let chart = '';
     if (d.equity_curve && d.equity_curve.length > 4) {
-      chart = `<img class="chart-img" src="/api/v1/vibe/runs/${runId}/chart?t=${Date.now()}" onerror="this.style.display='none'">`;
+      // Load chart asynchronously with auth — modal appears instantly, chart streams in
+      chart = `<div id="chart-slot" class="chart-img" style="min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted)">⏳ در حال بارگذاری نمودار…</div>`;
+      setTimeout(async () => {
+        try {
+          const t0 = localStorage.getItem('vt_token');
+          const r = await fetch(`/api/v1/vibe/runs/${runId}/chart`, {headers: {'Authorization': 'Bearer ' + t0}});
+          if (!r.ok) throw 0;
+          const blob = await r.blob();
+          const slot = document.getElementById('chart-slot');
+          if (!slot) return;
+          const img = new Image();
+          img.className = 'chart-img';
+          img.src = URL.createObjectURL(blob);
+          slot.replaceWith(img);
+        } catch { const s = document.getElementById('chart-slot'); if (s) s.remove(); }
+      }, 0);
     }
 
     const hasMetrics = boxes.length > 0;
