@@ -3,37 +3,51 @@ import { motion } from "framer-motion";
 import { createRoot } from "react-dom/client";
 import HomePage from "@/pages/HomePage";
 import SwarmPage from "@/pages/SwarmPage";
+import ChatPage from "@/pages/ChatPage";
 import { auth } from "@/api/client";
 import "@/index.css";
 
 const goLegacy = () => (location.href = "/app/legacy.html#reports");
 
 function App() {
-  const [view, setView] = useState(() => (location.hash === "#swarm" ? "swarm" : "home"));
+  const [view, setView] = useState(() => {
+    const h = location.hash;
+    return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : "home";
+  });
 
   useEffect(() => {
     if (!auth.token) location.href = "/app/legacy.html";
   }, []);
 
   useEffect(() => {
-    const onHash = () => setView(location.hash === "#swarm" ? "swarm" : "home");
+    const onHash = () => {
+      const h = location.hash;
+      setView(h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : "home");
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
   const goSwarm = () => { location.hash = "#swarm"; setView("swarm"); };
+  const goChat = () => { location.hash = "#chat"; setView("chat"); };
   const goHome = () => { location.hash = ""; setView("home"); };
 
   return view === "swarm" ? (
     <>
       <TopBar onHome={goHome} />
       <SwarmPage />
-      <BottomNav view="swarm" onHome={goHome} onSwarm={goSwarm} goLegacy={goLegacy} />
+      <BottomNav view="swarm" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goLegacy={goLegacy} />
+    </>
+  ) : view === "chat" ? (
+    <>
+      <TopBar onHome={goHome} />
+      <ChatPage />
+      <BottomNav view="chat" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goLegacy={goLegacy} />
     </>
   ) : (
     <>
-      <HomePage goChat={goSwarm} />
-      <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} goLegacy={goLegacy} />
+      <HomePage goChat={goChat} />
+      <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goLegacy={goLegacy} />
     </>
   );
 }
@@ -52,12 +66,13 @@ function TopBar({ onHome }: { onHome: () => void }) {
   );
 }
 
-function BottomNav({ view, onHome, onSwarm, goLegacy }: {
-  view: string; onHome: () => void; onSwarm: () => void; goLegacy: () => void;
+function BottomNav({ view, onHome, onSwarm, onChat, goLegacy }: {
+  view: string; onHome: () => void; onSwarm: () => void; onChat: () => void; goLegacy: () => void;
 }) {
   const tabs = [
     { id: "home", label: "خانه", active: view === "home", onClick: onHome },
-    { id: "swarm", label: "تیم‌های AI", active: view === "swarm", onClick: onSwarm },
+    { id: "chat", label: "چت با AI", active: view === "chat", onClick: onChat },
+    { id: "swarm", label: "تیم‌ها", active: view === "swarm", onClick: onSwarm },
     { id: "reports", label: "گزارش‌ها", active: false, onClick: goLegacy },
   ];
   return (
@@ -66,7 +81,7 @@ function BottomNav({ view, onHome, onSwarm, goLegacy }: {
         {tabs.map((t) => (
           <button key={t.id} onClick={t.onClick} className={`relative flex flex-col items-center gap-1 py-2.5 text-[10.5px] font-semibold ${t.active ? "text-indigo-300" : "text-muted"}`}>
             {t.active && <motion.span layoutId="nav-pill" className="absolute -top-px h-0.5 w-12 rounded-full bg-gradient-to-l from-brand to-brand-soft" />}
-            <span className="text-[16px]">{t.id === "home" ? "🏠" : t.id === "swarm" ? "🤖" : "📈"}</span>
+            <span className="text-[16px]">{t.id === "home" ? "🏠" : t.id === "chat" ? "💬" : t.id === "swarm" ? "🤖" : "📈"}</span>
             {t.label}
           </button>
         ))}

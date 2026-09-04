@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, ArrowUpRight, BarChart3, Bot, LineChart, Menu, Sparkles, Wallet, X } from "lucide-react";
+import { Activity, ArrowUpRight, BarChart3, Bot, LineChart, Menu, MessageSquare, Sparkles, Wallet, X } from "lucide-react";
 import { auth, getRuns, type RunRow } from "@/api/client";
 import { faNum, fmtCls, fmtPct } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
@@ -269,7 +269,8 @@ export default function HomePage({ goChat }: { goChat: () => void }) {
                 <div className="text-[11px] text-muted">حساب فعال</div>
               </div>
             </div>
-            <DrawerItem icon={<Bot size={17} />} label="تحلیل با AI" onClick={() => { setMenuOpen(false); goChat(); }} />
+            <DrawerItem icon={<MessageSquare size={17} />} label="چت با AI" onClick={() => { setMenuOpen(false); goChat(); }} />
+            <DrawerItem icon={<Bot size={17} />} label="تیم‌های هوش مصنوعی" onClick={() => { setMenuOpen(false); location.hash = "#swarm"; location.reload(); }} />
             <DrawerItem icon={<LineChart size={17} />} label="گزارش‌های بک‌تست" onClick={() => { setMenuOpen(false); location.href = "/app/legacy.html#reports"; }} />
             <div className="my-4 h-px bg-line" />
             <DrawerItem icon={<X size={17} />} label="خروج از حساب" danger onClick={logout} />
