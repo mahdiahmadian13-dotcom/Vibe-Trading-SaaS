@@ -11,6 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY shared/ /app/shared/
 COPY gateway/app/ /app/app/
+COPY bot/app/pdf_report.py /app/app/pdf_report.py
+COPY bot/assets/ /app/assets/
 
 EXPOSE 9000
 

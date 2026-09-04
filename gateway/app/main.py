@@ -756,3 +756,99 @@ async def session_history(
     await _require_owned_session(db, user, session_id)
     vibe = get_vibe()
     return await vibe.request("GET", f"/sessions/{session_id}/messages")
+
+
+# ============================================================================
+# Web App (static dashboard + report chart/PDF)
+# ============================================================================
+
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+
+app.mount("/app", StaticFiles(directory="/app/app/static", html=True), name="webapp")
+
+
+@app.get("/app")
+@app.get("/webapp")
+async def webapp_redirect():
+    """Convenience: /app → /app/ (index)."""
+    return Response(status_code=307, headers={"Location": "/app/"})
+
+
+@app.get("/api/v1/vibe/runs/{run_id}/chart")
+async def run_chart(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Equity-curve chart PNG for a run (ownership-checked) — rendered by the engine's data."""
+    detail = await get_run_detail(run_id=run_id, user=user, db=db)
+    equity_raw = detail.get("equity_curve") or []
+    metrics = detail.get("metrics") or {}
+
+    # Normalize equity: engine sends [{time, equity, drawdown}, ...] or plain numbers
+    equity = []
+    for point in equity_raw:
+        if isinstance(point, dict):
+            try:
+                equity.append(float(point.get("equity")))
+            except (TypeError, ValueError):
+                continue
+        else:
+            try:
+                equity.append(float(point))
+            except (TypeError, ValueError):
+                continue
+    if len(equity) < 2:
+        raise HTTPException(404, "نموداری برای این گزارش موجود نیست")
+
+    # Render minimal PNG server-side with matplotlib (already a gateway dep via bot? fallback: SVG)
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import io
+
+        fig, ax = plt.subplots(figsize=(10, 4.2), dpi=110)
+        xs = list(range(len(equity)))
+        ax.plot(xs, equity, linewidth=1.6, color="#4f8cff")
+        ax.fill_between(xs, min(equity), equity, alpha=0.12, color="#4f8cff")
+        ax.set_facecolor("#0b0e14")
+        fig.patch.set_facecolor("#131722")
+        ax.tick_params(colors="#8b93a7", labelsize=8)
+        for spine in ax.spines.values():
+            spine.set_color("#232b3f")
+        ax.grid(alpha=0.15, color="#8b93a7")
+        ax.set_title(f"Equity Curve — {metrics.get('total_return', 0):+.1%}", color="#e6e9f0", fontsize=11)
+        buf = io.BytesIO()
+        fig.tight_layout()
+        fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
+        plt.close(fig)
+        return Response(content=buf.getvalue(), media_type="image/png")
+    except Exception as exc:  # matplotlib missing → SVG fallback
+        w, h = 640, 220
+        lo, hi = min(equity), max(equity)
+        rng = (hi - lo) or 1
+        pts = " ".join(
+            f"{i * w / max(len(equity) - 1, 1):.1f},{h - 20 - (v - lo) * (h - 40) / rng:.1f}"
+            for i, v in enumerate(equity)
+        )
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}">'
+            f'<rect width="100%" height="100%" fill="#131722"/>'
+            f'<polyline points="{pts}" fill="none" stroke="#4f8cff" stroke-width="2"/></svg>'
+        )
+        return Response(content=svg, media_type="image/svg+xml")
+
+
+@app.get("/api/v1/vibe/runs/{run_id}/pdf")
+async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Backtest report as PDF (ownership-checked) — reuses the bot's fpdf2 builder."""
+    detail = await get_run_detail(run_id=run_id, user=user, db=db)
+    from app.pdf_report import build_backtest_pdf  # type: ignore
+
+    try:
+        pdf_bytes = build_backtest_pdf(detail)
+    except Exception as exc:
+        raise HTTPException(500, f"خطا در ساخت PDF: {exc}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="backtest_{run_id}.pdf"'},
+    )
