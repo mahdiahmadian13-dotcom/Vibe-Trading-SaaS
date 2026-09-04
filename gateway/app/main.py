@@ -624,8 +624,15 @@ async def get_run_detail(
     run_id: str,
     user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
+    full: bool = Query(False, description="Include heavy series (price/indicators/CSVs)"),
 ):
-    """Get full backtest run detail — ownership-checked (multi-tenant)."""
+    """Get backtest run detail — ownership-checked (multi-tenant).
+
+    Default response is a LIGHT summary (~100KB): metrics, equity_curve,
+    run_context, trade_log. Heavy fields (price_series, indicator_series,
+    artifacts_*_csv, ...) are stripped unless ?full=true — the bot Telegram
+    flow needs them for charts/tables, the web dashboard does not.
+    """
     vibe = get_vibe()
     detail = await vibe.request("GET", f"/runs/{run_id}")
 
@@ -640,6 +647,22 @@ async def get_run_detail(
             raise HTTPException(403, "این گزارش متعلق به شما نیست")
         if not run_session and not owned:
             raise HTTPException(403, "این گزارش متعلق به شما نیست")
+
+    if not full:
+        _HEAVY = (
+            "artifacts", "artifacts_equity_csv", "artifacts_metrics_csv",
+            "artifacts_positions_csv", "artifacts_target_positions_csv",
+            "artifacts_trades_csv", "price_series", "indicator_series",
+            "trade_markers", "run_logs", "planner_output", "strategy_spec",
+            "rag_selection", "run_card", "validation", "run_directory",
+            "llm_usage", "rebalance_notes", "risk_xray",
+        )
+        detail = {k: v for k, v in detail.items() if k not in _HEAVY}
+        # Downsample equity for the web chart (browser only draws ~250 points)
+        eq = detail.get("equity_curve")
+        if isinstance(eq, list) and len(eq) > 250:
+            step = len(eq) / 250
+            detail["equity_curve"] = [eq[int(i * step)] for i in range(250)]
     return detail
 
 

@@ -93,7 +93,9 @@ class GatewayClient:
         return await self.request("GET", "/api/v1/vibe/runs", token=token)
 
     async def get_run_detail(self, token: str, run_id: str) -> dict:
-        return await self.request("GET", f"/api/v1/vibe/runs/{run_id}", token=token)
+        # full=true: the bot renders charts/tables/PDF from price_series,
+        # trade_markers and the un-downsampled equity curve.
+        return await self.request("GET", f"/api/v1/vibe/runs/{run_id}?full=true", token=token)
 
     async def list_sessions(self, token: str) -> dict:
         return await self.request("GET", "/api/v1/vibe/sessions", token=token)
