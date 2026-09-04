@@ -4,3 +4,6 @@ httpx>=0.28.0
 redis[hiredis]>=5.2.0
 matplotlib>=3.9.0
 numpy>=1.26.0
+fpdf2>=2.8.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2

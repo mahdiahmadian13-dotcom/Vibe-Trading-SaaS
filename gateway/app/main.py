@@ -625,9 +625,22 @@ async def get_run_detail(
     user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get full backtest run detail with metrics, equity curve, trade log."""
+    """Get full backtest run detail — ownership-checked (multi-tenant)."""
     vibe = get_vibe()
-    return await vibe.request("GET", f"/runs/{run_id}")
+    detail = await vibe.request("GET", f"/runs/{run_id}")
+
+    # Privacy: the run must belong to one of this user's sessions
+    run_session = (
+        detail.get("session_id")
+        or (detail.get("run_context") or {}).get("raw_context", {}).get("session_id")
+    )
+    if not user.is_admin:
+        owned = await _owned_session_ids(db, user)
+        if run_session and run_session not in owned:
+            raise HTTPException(403, "این گزارش متعلق به شما نیست")
+        if not run_session and not owned:
+            raise HTTPException(403, "این گزارش متعلق به شما نیست")
+    return detail
 
 
 # ============================================================================
@@ -711,3 +724,35 @@ async def list_swarm_runs(
     if not user.is_admin:
         runs = [r for r in runs if r.get("id") in owned]
     return runs
+
+
+# ============================================================================
+# Session Hub (for bot chat history)
+# ============================================================================
+
+@app.get("/api/v1/vibe/sessions")
+async def list_sessions(
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """List the user's chat sessions (multi-tenant: only owned)."""
+    vibe = get_vibe()
+    owned = await _owned_session_ids(db, user)
+    if user.is_admin and not owned:
+        return await vibe.request("GET", "/sessions")
+    sessions = await vibe.request("GET", "/sessions")
+    if not user.is_admin:
+        sessions = [s for s in sessions if s.get("id") in owned or s.get("session_id") in owned]
+    return sessions
+
+
+@app.get("/api/v1/vibe/sessions/{session_id}/history")
+async def session_history(
+    session_id: str,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full chat history of a session (ownership-checked)."""
+    await _require_owned_session(db, user, session_id)
+    vibe = get_vibe()
+    return await vibe.request("GET", f"/sessions/{session_id}/messages")

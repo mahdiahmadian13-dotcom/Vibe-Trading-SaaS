@@ -19,7 +19,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.redis import RedisStorage, DefaultKeyBuilder
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, BufferedInputFile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -95,6 +95,12 @@ class GatewayClient:
     async def get_run_detail(self, token: str, run_id: str) -> dict:
         return await self.request("GET", f"/api/v1/vibe/runs/{run_id}", token=token)
 
+    async def list_sessions(self, token: str) -> dict:
+        return await self.request("GET", "/api/v1/vibe/sessions", token=token)
+
+    async def session_history(self, token: str, session_id: str) -> dict:
+        return await self.request("GET", f"/api/v1/vibe/sessions/{session_id}/history", token=token)
+
     async def get_swarm_presets(self, token: str) -> dict:
         return await self.request("GET", "/api/v1/vibe/swarm/presets", token=token)
 
@@ -127,6 +133,20 @@ class GatewayClient:
 
 gateway = GatewayClient(GATEWAY_URL)
 
+# PDF report builders (container layout: /app/app/pdf_report.py)
+try:
+    from app.pdf_report import build_backtest_pdf, build_swarm_pdf
+except ImportError:  # host/test layout
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location(
+        "pdf_report",
+        os.path.join(os.path.dirname(__file__), "pdf_report.py"),
+    )
+    _m = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_m)
+    build_backtest_pdf = _m.build_backtest_pdf
+    build_swarm_pdf = _m.build_swarm_pdf
+
 
 # ============================================================================
 # FSM States
@@ -139,8 +159,6 @@ class ChatState(StatesGroup):
     awaiting_register_pass = State()
     awaiting_login_user = State()
     awaiting_login_pass = State()
-
-
 # ============================================================================
 # User Token/Session Store (Redis-backed)
 # ============================================================================
@@ -167,6 +185,34 @@ async def set_user_token(user_id: int, token: str):
 async def get_user_session(user_id: int) -> Optional[str]:
     r = await get_redis()
     return await r.get(f"tg:{user_id}:session")
+
+
+async def add_session_to_history(user_id: int, session_id: str, name: str = ""):
+    """Track session IDs per user in a Redis list (for the chat hub)."""
+    r = await get_redis()
+    key = f"tg:{user_id}:sessions"
+    # Avoid duplicates
+    existing = await r.lrange(key, 0, -1)
+    for item in existing:
+        try:
+            if json.loads(item).get("id") == session_id:
+                return
+        except Exception:
+            continue
+    await r.lpush(key, json.dumps({"id": session_id, "name": name[:40]}))
+    await r.ltrim(key, 0, 49)  # keep last 50
+
+
+async def get_session_history(user_id: int) -> list[dict]:
+    r = await get_redis()
+    items = await r.lrange(f"tg:{user_id}:sessions", 0, 49)
+    out = []
+    for item in items:
+        try:
+            out.append(json.loads(item))
+        except Exception:
+            continue
+    return out
 
 
 async def set_user_session(user_id: int, session_id: str):
@@ -570,15 +616,106 @@ async def cb_chat(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    session_id = await get_user_session(callback.from_user.id)
-    if not session_id:
-        result = await gateway.create_session(token)
-        if "error" in result:
-            await callback.message.edit_text(f"❌ خطا: {result['error']}", reply_markup=back_to_menu_kb())
-            await callback.answer()
-            return
-        session_id = result.get("session_id")
-        await set_user_session(callback.from_user.id, session_id)
+    # Chat Hub: new chat + previous sessions list
+    hub_text = "💬 **چت‌هاب**\n\nیک چت جدید شروع کنید یا یکی از گفتگوهای قبلی را باز کنید:"
+    kb_rows = [[InlineKeyboardButton(text="🆕 چت جدید", callback_data="newchat")]]
+    history = await get_session_history(callback.from_user.id)
+    if history:
+        kb_rows.append([InlineKeyboardButton(text="📂 گفتگوهای قبلی:", callback_data="noop")])
+        for i, s in enumerate(history[:8]):
+            sid = s.get("id", "")
+            name = s.get("name") or f"چت {i + 1}"
+            kb_rows.append([InlineKeyboardButton(
+                text=f"💬 {name}",
+                callback_data=f"opensess:{sid}",
+            )])
+    kb_rows.append([InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")])
+
+    await callback.message.edit_text(
+        hub_text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="Markdown",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@router.callback_query(F.data == "newchat")
+async def cb_newchat(callback: CallbackQuery, state: FSMContext):
+    token = await get_user_token(callback.from_user.id)
+    if not token:
+        await callback.message.edit_text("❌ ابتدا وارد شوید.", reply_markup=back_to_menu_kb())
+        await callback.answer()
+        return
+
+    result = await gateway.create_session(token)
+    if "error" in result:
+        await callback.message.edit_text(f"❌ خطا: {result['error']}", reply_markup=back_to_menu_kb())
+        await callback.answer()
+        return
+    session_id = result.get("session_id")
+    await set_user_session(callback.from_user.id, session_id)
+    await add_session_to_history(callback.from_user.id, session_id, name="چت جدید")
+
+    await callback.message.edit_text(
+        "💬 **چت جدید شروع شد**\n\n"
+        "پیام خود را بنویسید. برای خروج /menu بزنید.",
+        parse_mode="Markdown",
+    )
+    await state.set_state(ChatState.chat_active)
+    await state.update_data(session_id=session_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("opensess:"))
+async def cb_opensess(callback: CallbackQuery, state: FSMContext):
+    """Open a previous session: show its history, then resume chat."""
+    session_id = callback.data.split(":", 1)[1]
+    token = await get_user_token(callback.from_user.id)
+    if not token:
+        await callback.message.edit_text("❌ ابتدا وارد شوید.", reply_markup=back_to_menu_kb())
+        await callback.answer()
+        return
+
+    await callback.message.edit_text("📂 در حال بارگذاری تاریخچه...")
+
+    msgs = await gateway.session_history(token, session_id)
+    if "error" in msgs or not isinstance(msgs, list):
+        text = "⚠️ تاریخچه‌ای یافت نشد. می‌توانید همین‌جا ادامه دهید."
+    else:
+        text = "📂 **تاریخچه گفتگو:**\n\n"
+        # Last 6 messages, compact
+        for m in msgs[-6:]:
+            role = m.get("role", "?")
+            content = str(m.get("content", ""))[:180]
+            if role == "user":
+                text += f"🧑 شما: {content}\n\n"
+            elif role == "assistant":
+                text += f"🤖 AI: {content}\n\n"
+        if len(text) > 3800:
+            text = text[:3800] + "\n..."
+
+    await set_user_session(callback.from_user.id, session_id)
+    kb = [
+        [InlineKeyboardButton(text="✏️ ادامه این گفتگو", callback_data=f"resume:{session_id}")],
+        [InlineKeyboardButton(text="« چت‌هاب", callback_data="chat")],
+        [InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")],
+    ]
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    except Exception:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("resume:"))
+async def cb_resume(callback: CallbackQuery, state: FSMContext):
+    session_id = callback.data.split(":", 1)[1]
+    await set_user_session(callback.from_user.id, session_id)
 
     await callback.message.edit_text(
         "💬 **حالت چت فعال شد**\n\n"
@@ -807,14 +944,29 @@ async def cb_swarm_run(callback: CallbackQuery, state: FSMContext):
 
         if current_status == "completed":
             report = status.get("final_report", "")
-            kb = []
-            # Report in chunks of 4000 chars
+            tasks = status.get("tasks", [])
+            # Full report in chat (chunks)
             for chunk_start in range(0, max(len(report), 1), 4000):
                 chunk = report[chunk_start:chunk_start + 4000]
                 if chunk:
                     await callback.message.answer(chunk)
-            kb.append([InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")])
-            await callback.message.answer("✅ گزارش کامل بالا ارسال شد.", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+            # Auto-generate the PDF version
+            pdf_note = "✅ گزارش کامل بالا ارسال شد."
+            try:
+                from app.pdf_report import build_swarm_pdf as _bswarm
+                pdf_bytes = await asyncio.to_thread(
+                    _bswarm, preset_name, preset_name, report, tasks
+                )
+                doc = BufferedInputFile(pdf_bytes, filename=f"swarm_{run_id[:16]}.pdf")
+                await callback.message.answer_document(
+                    doc, caption="📄 نسخه PDF گزارش (قابل ذخیره و اشتراک)"
+                )
+            except Exception:
+                pdf_note = "✅ گزارش کامل بالا ارسال شد. (PDF در دسترس نیست)"
+
+            kb = [[InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")]]
+            await callback.message.answer(pdf_note, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
             return
         elif current_status == "failed":
             await callback.message.edit_text(
@@ -1261,6 +1413,48 @@ async def cb_run_detail(callback: CallbackQuery):
             except Exception:
                 await callback.message.answer(table.replace("**", "").replace("```", ""))
 
+    # ---------- PDF download button ----------
+    kb = [
+        [InlineKeyboardButton(text="📄 دانلود گزارش PDF", callback_data=f"pdfrun:{run_id}")],
+        [InlineKeyboardButton(text="« گزارش‌ها", callback_data="reports")],
+        [InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")],
+    ]
+    await callback.message.answer(
+        "گزارش کامل بالا نمایش داده شد. برای دریافت نسخه PDF دکمه زیر را بزنید:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("pdfrun:"))
+async def cb_pdf_run(callback: CallbackQuery):
+    """Generate and send the backtest report as a PDF document."""
+    run_id = callback.data.split(":", 1)[1]
+    token = await get_user_token(callback.from_user.id)
+    if not token:
+        await callback.answer("ابتدا وارد شوید", show_alert=True)
+        return
+
+    wait = await callback.message.answer("📄 در حال ساخت PDF...")
+    try:
+        import asyncio as _aio
+        detail = await gateway.get_run_detail(token, run_id)
+        if "error" in detail:
+            await wait.edit_text(f"❌ {detail['error']}")
+            await callback.answer()
+            return
+
+        pdf_bytes = await _aio.to_thread(build_backtest_pdf, detail)
+
+        filename = f"backtest_{run_id[:16]}.pdf"
+        doc = BufferedInputFile(pdf_bytes, filename=filename)
+        await wait.delete()
+        await callback.message.answer_document(
+            doc,
+            caption=f"📊 گزارش بکتست — بازده: {detail.get('metrics', {}).get('total_return', 0):+.1%}",
+        )
+    except Exception as e:
+        await wait.edit_text(f"❌ خطا در ساخت PDF: {e}")
     await callback.answer()
 
 
