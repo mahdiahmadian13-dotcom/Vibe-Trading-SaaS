@@ -1118,6 +1118,40 @@ VAR_SUGGESTIONS = {
     "sector": ["بانک", "انرژی", "نیمه‌هادی", "مصرفی"],
 }
 
+# Persian titles + guidance for the known swarm variables.
+# Anything not listed here falls back to the raw variable name + the
+# engine's English description (still shown as a secondary hint).
+VAR_FA = {
+    "target": ("🎯 دارایی هدف", "چه ارز یا سهمی را تحلیل کنیم؟ یکی را انتخاب کن یا بنویس (مثلاً BTC یا تسلا)"),
+    "timeframe": ("⏱ بازه زمانی", "تحلیل برای چه بازه‌ای باشد؟"),
+    "market": ("🌍 بازار هدف", "کدام بازار را می‌خواهی تحلیل کنیم؟"),
+    "goal": ("🎓 هدف تحقیق", "تمرکز اصلی تحلیل چه باشد؟"),
+    "horizon": ("📅 افق سرمایه‌گذاری", "چقدر قصد داری نگه داری کنی؟"),
+    "risk_profile": ("⚖️ پروفایل ریسک", "سطح ریسک قابل تحمل شما؟"),
+    "risk_tolerance": ("⚖️ تحمل ریسک", "چقدر ریسک را می‌پذیری؟"),
+    "view": ("📈 دیدگاه بازار", "دیدگاه فعلی شما نسبت به بازار؟"),
+    "target_variable": ("🎯 متغیر پیش‌بینی", "مدل چه چیزی را پیش‌بینی کند؟"),
+    "factor_type": ("🧮 نوع فاکتور", "کدام دسته فاکتور بررسی شود؟"),
+    "fund_type": ("💼 نوع صندوق", "چه نوع صندوقی تحلیل شود؟"),
+    "sector": ("🏭 صنعت", "کدام صنعت بررسی شود؟ (خالی = همه صنایع)"),
+    "commodity": ("🛢 کالا", "کدام کالا تحلیل شود؟ (نفت، طلا، مس...)"),
+    "crisis": ("🌍 سناریوی بحران", "چه سناریوی بحرانی شبیه‌سازی شود؟ مثلاً: جنگ تجاری، بسته شدن تنگه هرمز"),
+    "portfolio": ("📊 پرتفوی", "پرتفوی مورد نظر را توصیف کن (مثلاً ترکیب ارزش-رشد)"),
+    "company": ("🏢 شرکت", "نام یا نماد شرکت (مثلاً تسلا، NVDA)"),
+    "review_period": ("🔁 بازه بازنگری", "بازنگری با چه بازه‌ای انجام شود؟"),
+    "strategy_type": ("📈 نوع استراتژی", "کدام سبک استراتژی؟"),
+    "event_type": ("📢 نوع رویداد", "کدام رویدادها بررسی شوند؟ (ادغام، گزارش مالی...)"),
+}
+
+
+def _var_title_desc(var_name: str, engine_desc: str, required: bool):
+    """Return (title, description) in Persian for a form variable."""
+    title, desc = VAR_FA.get(var_name, (f"❓ {var_name}", ""))
+    if not desc:
+        desc = engine_desc or "یکی از گزینه‌ها را انتخاب کن یا مقدارش را بنویس."
+    note = "" if required else "\n⭕ این مورد اختیاری است — می‌توانی ردش کنی."
+    return title, desc + note
+
 
 def _var_keyboard(var_name: str, page: int = 1, user_suggestions: list | None = None):
     """Keyboard for a swarm form variable with pagination (9 per page = 3x3).
@@ -1198,17 +1232,15 @@ async def _ask_next_swarm_var(callback_or_message, state: FSMContext, telegram_u
         await _track_swarm_progress(status, callback_or_message, state, token, preset_name, result.get("id", ""))
         return
 
-    # Ask the next variable
+    # Ask the next variable — Persian title + friendly guidance
     name = next_var["name"]
-    desc = next_var.get("description", "")
-    required = next_var.get("required", False)
-    optional_note = "" if required else " (اختیاری — بنویس «رد» تا خالی بماند)"
+    title, desc = _var_title_desc(name, next_var.get("description", ""), next_var.get("required", False))
 
     ask_text = (
         f"🤖 **فرم تحلیل تیمی**\n\n"
-        f"❓ {name}{optional_note}\n"
-        f"_{desc}_\n\n"
-        f"({len(answers) + 1} از {len(variables)})"
+        f"{title}\n"
+        f"💡 {desc}\n\n"
+        f"📍 سوال {len(answers) + 1} از {len(variables)}"
     )
     kb = _var_keyboard(name, page=1)
 
@@ -1234,7 +1266,19 @@ async def cb_svar_page(callback: CallbackQuery, state: FSMContext):
     except ValueError:
         page = 1
 
-    ask_text = f"❓ {var_name}\n(صفحه {page})"
+    # Re-render with the full Persian prompt (title + guidance)
+    data = await state.get_data()
+    variables = data.get("sw_vars", [])
+    answers = data.get("sw_answers", {})
+    var_meta = next((v for v in variables if v["name"] == var_name), {})
+    title, desc = _var_title_desc(var_name, var_meta.get("description", ""), var_meta.get("required", False))
+
+    ask_text = (
+        f"🤖 **فرم تحلیل تیمی**\n\n"
+        f"{title}\n"
+        f"💡 {desc}\n\n"
+        f"📍 سوال {len(answers) + 1} از {len(variables)}   |   صفحه {page}"
+    )
     await callback.message.edit_text(
         ask_text,
         reply_markup=_var_keyboard(var_name, page=page),
