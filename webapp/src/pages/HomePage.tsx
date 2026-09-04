@@ -65,7 +65,7 @@ function Hero({ onCta }: { onCta: () => void }) {
           <Button size="lg" onClick={onCta}>
             <Bot size={17} /> شروع تحلیل با AI
           </Button>
-          <Button size="lg" variant="outline" onClick={() => (location.hash = "#reports")}>
+          <Button size="lg" variant="outline" onClick={() => (location.href = "/app/legacy.html#reports")}>
             <LineChart size={17} /> مشاهده گزارش‌ها
           </Button>
         </div>
@@ -208,7 +208,7 @@ export default function HomePage({ goChat }: { goChat: () => void }) {
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {top.map((r) => (
-              <RunRowCard key={r.run_id} run={r} onOpen={() => (location.hash = "#reports")} />
+              <RunRowCard key={r.run_id} run={r} onOpen={() => (location.href = "/app/legacy.html#reports")} />
             ))}
           </div>
         )}
