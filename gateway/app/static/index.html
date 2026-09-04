@@ -89,6 +89,8 @@ main { height:calc(100vh - 60px); overflow:hidden; }
 .rpt-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(310px, 1fr)); gap:16px; }
 .rpt-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px; cursor:pointer; transition:.2s; }
 .rpt-card:hover { border-color:var(--accent); transform:translateY(-2px); }
+.rpt-card.rpt-dim { opacity:.65; }
+.rpt-card.rpt-dim:hover { opacity:1; }
 .rpt-card .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
 .badge { font-size:11.5px; padding:4px 10px; border-radius:20px; }
 .badge.success { background:rgba(34,197,94,.14); color:#86efac; }
@@ -407,8 +409,11 @@ async function loadReports() {
       const badge = r.status === 'success' ? '<span class="badge success">موفق</span>'
                   : r.status === 'running' ? '<span class="badge running">در حال اجرا</span>'
                   : `<span class="badge failed">${esc(r.status)}</span>`;
-      return `<div class="rpt-card" onclick="openReport('${esc(r.run_id)}')">
-        <div class="top"><span style="color:var(--muted);font-size:12px" dir="ltr">${esc(r.run_id)}</span>${badge}</div>
+      const kindBadge = hasM
+        ? '<span class="badge" style="background:rgba(79,140,255,.14);color:#93c5fd">بک‌تست</span>'
+        : '<span class="badge" style="background:var(--panel2);color:var(--muted)">چت</span>';
+      return `<div class="rpt-card ${hasM ? '' : 'rpt-dim'}" onclick="openReport('${esc(r.run_id)}')">
+        <div class="top"><span style="color:var(--muted);font-size:12px" dir="ltr">${esc(r.run_id)}</span><span>${kindBadge}${badge}</span></div>
         <div class="prompt">${esc(r.prompt || '—')}</div>
         <div class="meta">
           ${t != null ? `<span class="${fmtCls(t)}">بازده ${fmtPct(t)}</span>` : ''}
@@ -428,31 +433,53 @@ async function openReport(runId) {
     const m = d.metrics || {};
     const boxes = [];
     const box = (k, v, cls='') => v != null && boxes.push(`<div class="m-box"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`);
-    box('بازده کل', fmtPct(m.total_return), fmtCls(m.total_return || 0));
-    box('سالانه', fmtPct(m.annual_return), fmtCls(m.annual_return || 0));
+    box('بازده کل', m.total_return != null ? fmtPct(m.total_return) : null, fmtCls(m.total_return || 0));
+    box('سالانه', m.annual_return != null ? fmtPct(m.annual_return) : null, fmtCls(m.annual_return || 0));
     box('شارپ', m.sharpe != null ? m.sharpe.toFixed(2) : null);
     box('سورتینو', m.sortino != null ? m.sortino.toFixed(2) : null);
-    box('حداکثر افت', fmtPct(m.max_drawdown), 'ret-neg');
+    box('حداکثر افت', m.max_drawdown != null ? fmtPct(m.max_drawdown) : null, 'ret-neg');
     box('نرخ برد', m.win_rate != null ? (m.win_rate * 100).toFixed(0) + '%' : null);
     box('معاملات', m.trade_count);
     box('ارزش نهایی', m.final_value != null ? '$' + Number(m.final_value).toLocaleString() : null);
 
     let chart = '';
     if (d.equity_curve && d.equity_curve.length > 4) {
-      chart = `<img class="chart-img" src="/api/v1/vibe/runs/${runId}/chart" onerror="this.style.display='none'">`;
+      chart = `<img class="chart-img" src="/api/v1/vibe/runs/${runId}/chart?t=${Date.now()}" onerror="this.style.display='none'">`;
+    }
+
+    const hasMetrics = boxes.length > 0;
+
+    // Not a real backtest (chat run / no metrics) → show the agent's answer text instead
+    let chatAnswer = '';
+    if (!hasMetrics) {
+      try {
+        const sid = d.session_id
+          || (d.run_context && d.run_context.raw_context && d.run_context.raw_context.session_id);
+        if (sid) {
+          const msgs = await api(`/api/v1/vibe/sessions/${sid}/messages`);
+          const list = Array.isArray(msgs) ? msgs : (msgs.messages || []);
+          const lastBot = [...list].reverse().find(x => x.role !== 'user' && x.role !== 'human');
+          if (lastBot) chatAnswer = lastBot.content || lastBot.text || '';
+        }
+      } catch {}
     }
 
     $('modal').innerHTML = `
-      <h3>📊 ${esc(d.prompt || runId)}</h3>
+      <h3>${hasMetrics ? '📊 گزارش بک‌تست' : '💬 خروجی چت'} — ${esc(d.prompt || runId)}</h3>
       <div style="color:var(--muted);font-size:12.5px" dir="ltr">${esc(runId)}</div>
-      <div class="m-grid">${boxes.join('') || '<div style="color:var(--muted)">متیری ثبت نشده</div>'}</div>
-      ${chart}
+      ${hasMetrics
+        ? `<div class="m-grid">${boxes.join('')}</div>${chart}`
+        : `<div class="m-sec">این اجرا یک درخواست چت است (بک‌تست کامل نبود). پاسخ هوش مصنوعی:</div>
+           <div style="background:var(--panel2);border-radius:12px;padding:16px;font-size:13.5px;line-height:2;white-space:pre-wrap;max-height:45vh;overflow-y:auto">${esc(chatAnswer || 'پاسخی ثبت نشده — از بخش چت دوباره بپرس.')}</div>`}
       <div class="modal-actions">
-        ${m.total_return != null ? `<a class="a-pdf" href="/api/v1/vibe/runs/${runId}/pdf" download="backtest_${runId}.pdf">📄 دانلود PDF</a>` : ''}
+        ${hasMetrics ? `<a class="a-pdf" href="/api/v1/vibe/runs/${runId}/pdf" download="backtest_${runId}.pdf">📄 دانلود PDF</a>` : ''}
         <button class="a-close" onclick="closeModal()">بستن</button>
       </div>`;
   } catch (e) {
-    $('modal').innerHTML = `<div class="empty-hint">❌ ${esc(e.message)}</div>`;
+    $('modal').innerHTML = `
+      <h3>❌ خطا</h3>
+      <div style="background:rgba(239,68,68,.1);border-radius:12px;padding:16px;font-size:14px;line-height:2">${esc(e.message)}</div>
+      <div class="modal-actions"><button class="a-close" onclick="closeModal()">بستن</button></div>`;
   }
 }
 function closeModal() { $('modal-bg').classList.remove('open'); }
