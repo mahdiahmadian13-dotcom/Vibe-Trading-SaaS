@@ -886,7 +886,7 @@ async def cb_swarm(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    kb_lines = []
+    kb_lines = [[InlineKeyboardButton(text="📜 اجراهای قبلی", callback_data="swhist:0")]]
     for p in (presets if isinstance(presets, list) else presets.get("presets", [])):
         name = p.get("name", "")
         title = p.get("title", name)
@@ -904,6 +904,156 @@ async def cb_swarm(callback: CallbackQuery, state: FSMContext):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_lines),
         parse_mode="Markdown",
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("swhist:"))
+async def cb_swarm_history(callback: CallbackQuery, state: FSMContext):
+    """Previous swarm runs — paginated list; open a run → detail + PDF."""
+    try:
+        page = int(callback.data.split(":")[1])
+    except (IndexError, ValueError):
+        page = 0
+    token = await get_user_token(callback.from_user.id)
+    if not token:
+        await callback.message.edit_text("❌ ابتدا وارد شوید.", reply_markup=back_to_menu_kb())
+        await callback.answer()
+        return
+
+    runs = await gateway.get_swarm_runs(token)
+    if "error" in runs or not isinstance(runs, list):
+        runs = []
+
+    PER = 5
+    total = len(runs)
+    max_page = max(0, (total - 1) // PER)
+    page = max(0, min(page, max_page))
+    chunk = runs[page * PER:(page + 1) * PER]
+
+    if not chunk:
+        await callback.message.edit_text(
+            "📜 **اجراهای قبلی**\n\n📭 هنوز اجرایی ندارید.\n"
+            "از منوی Swarm یک تیم انتخاب و اجرا کنید.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="« تیم‌های تحلیل", callback_data="swarm")],
+                [InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")],
+            ]),
+            parse_mode="Markdown",
+        )
+        await callback.answer()
+        return
+
+    text = f"📜 **اجراهای قبلی** (صفحه {page + 1}/{max_page + 1})\n\n"
+    kb_rows = []
+    for r in chunk:
+        rid = r.get("id", "")
+        preset = r.get("preset_name", "?")
+        status = r.get("status", "?")
+        icon = {"completed": "✅", "running": "🔄", "failed": "❌", "cancelled": "🚫"}.get(status, "⏳")
+        done = r.get("completed_count", "?")
+        task_count = r.get("task_count", "?")
+        text += f"{icon} `{preset}` — {status} ({done}/{task_count})\n"
+        kb_rows.append([InlineKeyboardButton(
+            text=f"{icon} {preset[:26]} — {status}",
+            callback_data=f"swrun:{rid[:56]}",
+        )])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀ قبلی", callback_data=f"swhist:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"📄 {page + 1}/{max_page + 1}", callback_data="noop"))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="بعدی ▶", callback_data=f"swhist:{page + 1}"))
+    kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="« تیم‌های تحلیل", callback_data="swarm")])
+    kb_rows.append([InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")])
+
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="Markdown")
+    except Exception:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("swrun:"))
+async def cb_swarm_run_detail(callback: CallbackQuery, state: FSMContext):
+    """Open a previous swarm run: status, report preview, PDF download."""
+    run_id = callback.data.split(":", 1)[1]
+    token = await get_user_token(callback.from_user.id)
+    if not token:
+        await callback.message.edit_text("❌ ابتدا وارد شوید.", reply_markup=back_to_menu_kb())
+        await callback.answer()
+        return
+
+    await callback.message.edit_text("📜 در حال بارگذاری اجرا...")
+
+    status = await gateway.get_swarm_run(token, run_id)
+    if "error" in status:
+        await callback.message.edit_text(f"❌ {status['error']}", reply_markup=back_to_menu_kb())
+        await callback.answer()
+        return
+
+    preset = status.get("preset_name", "?")
+    run_status = status.get("status", "?")
+    tasks = status.get("tasks", [])
+    report = status.get("final_report", "")
+
+    icon = {"completed": "✅", "running": "🔄", "failed": "❌", "cancelled": "🚫"}.get(run_status, "⏳")
+    text = f"📜 **اجرای تیمی**\n\n🤖 {preset}\n{icon} وضعیت: {run_status}\n\n"
+    for t in tasks:
+        agent = str(t.get("agent_name", "?"))[:22]
+        s = t.get("status", "?")
+        aicon = {"completed": "✅", "in_progress": "🔄", "blocked": "⚠️", "failed": "❌"}.get(s, "⏳")
+        text += f"{aicon} {agent}\n"
+
+    kb = []
+    if report:
+        text += f"\n📝 **پیش‌نمایش گزارش:**\n{str(report)[:600]}{'...' if len(report) > 600 else ''}\n"
+        kb.append([InlineKeyboardButton(text="📄 دانلود PDF کامل", callback_data=f"swpdf:{run_id[:56]}")])
+    elif run_status == "running":
+        kb.append([InlineKeyboardButton(text="🔄 رفرش وضعیت", callback_data=f"swrun:{run_id[:56]}")])
+    kb.append([InlineKeyboardButton(text="« اجراهای قبلی", callback_data="swhist:0")])
+    kb.append([InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")])
+
+    try:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    except Exception:
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("swpdf:"))
+async def cb_swarm_pdf(callback: CallbackQuery):
+    """Download a previous swarm run's report as PDF."""
+    run_id = callback.data.split(":", 1)[1]
+    token = await get_user_token(callback.from_user.id)
+    if not token:
+        await callback.answer("ابتدا وارد شوید", show_alert=True)
+        return
+
+    wait = await callback.message.answer("📄 در حال ساخت PDF...")
+    try:
+        status = await gateway.get_swarm_run(token, run_id)
+        if "error" in status:
+            await wait.edit_text(f"❌ {status['error']}")
+            await callback.answer()
+            return
+
+        report = status.get("final_report", "")
+        if not report:
+            await wait.edit_text("⚠️ این اجرا هنوز گزارشی ندارد (تکمیل نشده).")
+            await callback.answer()
+            return
+
+        tasks = status.get("tasks", [])
+        preset = status.get("preset_name", "swarm")
+        pdf_bytes = await asyncio.to_thread(build_swarm_pdf, preset, preset, report, tasks)
+
+        doc = BufferedInputFile(pdf_bytes, filename=f"swarm_{run_id[:16]}.pdf")
+        await wait.delete()
+        await callback.message.answer_document(doc, caption=f"📄 گزارش {preset}")
+    except Exception as e:
+        await wait.edit_text(f"❌ خطا در ساخت PDF: {e}")
     await callback.answer()
 
 
@@ -1130,8 +1280,10 @@ async def _track_swarm_progress(status_msg, source, state: FSMContext, token: st
                 pdf_bytes = await asyncio.to_thread(build_swarm_pdf, preset_name, preset_name, report, tasks)
                 doc = BufferedInputFile(pdf_bytes, filename=f"swarm_{run_id[:16]}.pdf")
                 await status_msg.answer_document(doc, caption="📄 نسخه PDF گزارش")
-            except Exception:
-                pdf_note += " (PDF در دسترس نیست)"
+            except Exception as e:
+                import logging
+                logging.exception("swarm PDF build failed")
+                pdf_note += f" (PDF ساخته نشد: {e})"
             kb = [[InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")]]
             await status_msg.answer(pdf_note, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
             return

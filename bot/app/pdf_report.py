@@ -36,7 +36,7 @@ def fa(text) -> str:
         return ""
     text = str(text)
     # Strip emoji/symbols the embedded font lacks (fpdf2 would render garbage boxes)
-    text = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F]", "", text)
+    text = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u2190-\u21FF\u2500-\u257F\u2580-\u259F\u25A0-\u25FF]", "", text)
     try:
         return get_display(arabic_reshaper.reshape(text))
     except Exception:
@@ -104,7 +104,26 @@ class PDFReport(FPDF):
     def body(self, text: str, size: float = 10.5):
         self.set_font("Vazir", "", size)
         self.set_text_color(*C_PRIMARY)
-        self.multi_cell(0, 6.2, fa(text), align="R")
+        # Always start at the left margin — a preceding cell may have left
+        # the cursor mid-row, which makes multi_cell(0) fail with
+        # "Not enough horizontal space to render a single character".
+        self.set_x(self.l_margin)
+        # Wrap very long unbroken tokens (URLs, hashes) so the line breaker
+        # always finds a break opportunity.
+        def _wrap(tok: str, limit: int = 48) -> str:
+            return " ".join(tok[i:i + limit] for i in range(0, len(tok), limit)) if len(tok) > limit else tok
+        text = " ".join(_wrap(tok) for tok in text.split())
+        try:
+            self.multi_cell(0, 6.2, fa(text), align="R")
+        except Exception:
+            # Last-resort fallback: character-chunked plain writes
+            chunk = fa(text)
+            for i in range(0, len(chunk), 900):
+                self.set_x(self.l_margin)
+                try:
+                    self.multi_cell(0, 6.2, chunk[i:i + 900], align="R")
+                except Exception:
+                    break
 
     def info_box(self, lines: list[tuple[str, str]], color=C_PRIMARY):
         self.set_fill_color(*C_LIGHT)
@@ -475,8 +494,8 @@ def build_swarm_pdf(preset_name: str, preset_title: str, report: str,
                      align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.section("گزارش نهایی")
-    # Report can be long; multi_cell handles pagination
-    # Split by lines to keep RTL shaping per-paragraph
+    # Split by lines; per-paragraph RTL shaping. body() itself guards
+    # the x-position and unbreakable tokens.
     for para in (report or "").split("\n"):
         para = para.strip()
         if para:
