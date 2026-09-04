@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { auth } from "@/api/client";
 import { motion } from "framer-motion";
 import { Activity, ArrowUpRight, BarChart3, Bot, LineChart, Sparkles, Wallet } from "lucide-react";
 import { getRuns, type RunRow } from "@/api/client";
@@ -126,6 +127,9 @@ function RunRowCard({ run, onOpen }: { run: RunRow; onOpen: () => void }) {
 
 export default function HomePage({ goChat }: { goChat: () => void }) {
   const { runs, error } = useRuns();
+  useEffect(() => {
+    if (!auth.token) location.href = "/app/legacy.html";
+  }, []);
 
   const stats = useMemo(() => {
     const list = runs || [];
