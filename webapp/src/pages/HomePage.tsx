@@ -241,14 +241,6 @@ export default function HomePage({ goChat }: { goChat: () => void }) {
         ))}
       </div>
 
-      {/* ---------- mobile bottom nav (app-like) ---------- */}
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-panel/85 backdrop-blur-xl md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-        <div className="mx-auto grid max-w-md grid-cols-2">
-          <NavTab icon={<Bot size={19} />} label="تحلیل با AI" active onClick={goChat} />
-          <NavTab icon={<LineChart size={19} />} label="گزارش‌ها" onClick={() => (location.href = "/app/legacy.html#reports")} />
-        </div>
-      </nav>
-
       {/* ---------- mobile drawer ---------- */}
       {menuOpen && (
         <motion.div
@@ -285,28 +277,6 @@ export default function HomePage({ goChat }: { goChat: () => void }) {
         </motion.div>
       )}
     </div>
-  );
-}
-
-function NavTab({ icon, label, active, onClick }: {
-  icon: React.ReactNode; label: string; active?: boolean; onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`relative flex flex-col items-center gap-1 py-2.5 text-[10.5px] font-semibold transition-colors ${
-        active ? "text-indigo-300" : "text-muted"
-      }`}
-    >
-      {active && (
-        <motion.span
-          layoutId="nav-pill"
-          className="absolute -top-px h-0.5 w-12 rounded-full bg-gradient-to-l from-brand to-brand-soft"
-        />
-      )}
-      {icon}
-      {label}
-    </button>
   );
 }
 
