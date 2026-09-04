@@ -73,7 +73,6 @@ function BottomNav({ view, onHome, onSwarm, onChat, goLegacy }: {
     { id: "home", label: "خانه", active: view === "home", onClick: onHome },
     { id: "chat", label: "چت با AI", active: view === "chat", onClick: onChat },
     { id: "swarm", label: "تیم‌ها", active: view === "swarm", onClick: onSwarm },
-    { id: "reports", label: "گزارش‌ها", active: false, onClick: goLegacy },
   ];
   return (
     <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line bg-panel/85 backdrop-blur-xl md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -81,7 +80,7 @@ function BottomNav({ view, onHome, onSwarm, onChat, goLegacy }: {
         {tabs.map((t) => (
           <button key={t.id} onClick={t.onClick} className={`relative flex flex-col items-center gap-1 py-2.5 text-[10.5px] font-semibold ${t.active ? "text-indigo-300" : "text-muted"}`}>
             {t.active && <motion.span layoutId="nav-pill" className="absolute -top-px h-0.5 w-12 rounded-full bg-gradient-to-l from-brand to-brand-soft" />}
-            <span className="text-[16px]">{t.id === "home" ? "🏠" : t.id === "chat" ? "💬" : t.id === "swarm" ? "🤖" : "📈"}</span>
+            <span className="text-[16px]">{t.id === "home" ? "🏠" : t.id === "chat" ? "💬" : "🤖"}</span>
             {t.label}
           </button>
         ))}
