@@ -1195,6 +1195,24 @@ def resolve_symbol(text: str) -> str | None:
     return None
 
 
+def normalize_asset(text: str) -> str:
+    """Normalize a raw asset ticker to engine convention (BTC, TSLA, EUR/USD...)."""
+    t = text.strip().upper()
+    if "/" in t or t.endswith("=F"):
+        return t
+    return t
+
+
+def fuzzy_suggest(text: str, pool: list) -> list:
+    """Assets from pool matching a prefix/substring of the typed text."""
+    t = text.strip().lower()
+    if not t:
+        return []
+    starts = [s for s in pool if s.lower().startswith(t)]
+    contains = [s for s in pool if t in s.lower() and s not in starts]
+    return (starts + contains)[:6]
+
+
 CRYPTO_PRESETS = (
     "crypto_research_lab", "crypto_trading_desk",
 )
@@ -1268,17 +1286,25 @@ async def _ask_next_swarm_var(callback_or_message, state: FSMContext, telegram_u
             if hasattr(callback_or_message, "message") and not hasattr(callback_or_message, "chat")
             else callback_or_message
         )
-        status = await msg.edit_text(
+        launch_text = (
             f"🤖 در حال راه‌اندازی تیم...\n\n"
             f"پریست: {preset_name}\n"
             + "\n".join(f"• {k}: {v}" for k, v in answers.items())
             + "\n\n⏳ ۱۵-۲۰ دقیقه — پیشرفت لحظه‌ای همین‌جا نمایش داده می‌شود."
         )
+        try:
+            status = await msg.edit_text(launch_text)
+        except Exception:
+            status = await msg.answer(launch_text)
         await state.set_state(ChatState.main_menu)
 
         result = await gateway.create_swarm_run(token, preset_name, user_vars)
         if "error" in result:
-            await status.edit_text(f"❌ خطا: {result['error']}", reply_markup=back_to_menu_kb())
+            err = f"❌ خطا: {result['error']}"
+            try:
+                await (status or msg).edit_text(err, reply_markup=back_to_menu_kb())
+            except Exception:
+                await msg.answer(err, reply_markup=back_to_menu_kb())
             return
         await _track_swarm_progress(status, callback_or_message, state, token, preset_name, result.get("id", ""))
         return
@@ -1454,17 +1480,57 @@ async def process_swarm_var(message: Message, state: FSMContext):
     optional = not var_meta.get("required", False)
 
     if optional and text.lower() in ("رد", "skip", "-"):
-        pass  # leave unset
+        await state.update_data(sw_answers=answers)
+        await state.set_state(ChatState.main_menu)
+        await _ask_next_swarm_var(message, state, message.from_user.id)
+        return
+
+    is_asset = var_name in ("target", "asset", "symbol")
+    resolved = resolve_symbol(text) if is_asset else None
+
+    # Fuzzy "did you mean": partial ticker like 'bt' or 'تسل' → tappable matches
+    if is_asset and not resolved and not any(
+        s.lower() == text.strip().lower() for s in VAR_SUGGESTIONS.get("target", [])
+    ):
+        pool = TARGET_CRYPTO if data.get("sw_preset", "") in CRYPTO_PRESETS else TARGET_MULTI
+        matches = fuzzy_suggest(text, pool)
+        if matches and normalize_asset(text) not in [m.upper() for m in matches]:
+            rows = [[InlineKeyboardButton(text=s, callback_data=f"svar:{s}")] for s in matches]
+            rows.append([InlineKeyboardButton(
+                text=f"✅ همین را می‌خواهم: {normalize_asset(text)}",
+                callback_data=f"svarraw:{normalize_asset(text)}",
+            )])
+            await message.answer(
+                f"🔎 منظورت این بود؟ (نوشتی: «{text}»)",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+            )
+            await state.update_data(sw_pending_raw=normalize_asset(text))
+            return  # wait for the user to pick or confirm
+
+    if resolved:
+        answers[var_name] = resolved
+        await message.answer(f"✅ شناسایی شد: **{text}** → `{resolved}`")
+    elif is_asset:
+        answers[var_name] = normalize_asset(text)  # 'btc' → 'BTC'
     else:
-        # Symbol-aware: resolve friendly Persian/English names for asset fields
-        resolved = resolve_symbol(text) if var_name in ("target", "asset", "symbol") else None
-        answers[var_name] = resolved or text
-        if resolved:
-            await message.answer(f"✅ شناسایی شد: **{text}** → `{resolved}`")
+        answers[var_name] = text
 
     await state.update_data(sw_answers=answers)
     await state.set_state(ChatState.main_menu)
     await _ask_next_swarm_var(message, state, message.from_user.id)
+
+
+@router.callback_query(F.data.startswith("svarraw:"))
+async def cb_svar_raw_confirm(callback: CallbackQuery, state: FSMContext):
+    """User confirmed the raw typed asset after fuzzy suggestions."""
+    raw = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+    var_name = data.get("sw_current_var", "")
+    answers = data.get("sw_answers", {})
+    answers[var_name] = raw
+    await state.update_data(sw_answers=answers, sw_pending_raw="")
+    await state.set_state(ChatState.main_menu)
+    await _ask_next_swarm_var(callback, state, callback.from_user.id)
 
 
 # ============================================================================
