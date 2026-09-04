@@ -745,6 +745,11 @@ async def process_chat_message(message: Message, state: FSMContext):
 
     await message.chat.do("typing")
 
+    # Snapshot BEFORE sending: only answers that arrive after our send are ours.
+    # This is the fix for the "previous answer shown again" bug.
+    pre = await gateway.get_messages(token, session_id)
+    pre_count = len(pre) if isinstance(pre, list) else 0
+
     result = await gateway.send_message(token, session_id, message.text)
 
     if "error" in result:
@@ -752,55 +757,66 @@ async def process_chat_message(message: Message, state: FSMContext):
         error_text = str(result.get("error", ""))
         if status_code == 429:
             await message.answer(f"⏳ {error_text}", reply_markup=back_to_menu_kb())
-        elif status_code == 409 or "already has a run" in error_text:
-            # Engine is still processing previous message — wait and retry
-            await message.answer("⏳ درخواست قبلی هنوز در حال پردازش است. لطفاً چند ثانیه صبر کنید...")
-            await asyncio.sleep(10)
-            # Retry once
-            result = await gateway.send_message(token, session_id, message.text)
-            if "error" in result:
-                await message.answer(f"❌ خطا: {result.get('error', 'خطای ناشناخته')}")
-                return
-        else:
-            await message.answer(f"❌ خطا: {error_text}")
             return
+        if status_code == 409 or "already has a run" in error_text:
+            # A previous run is still executing — do NOT resend (that 409s again).
+            # Just wait for the pending run to produce its answer, then deliver it.
+            thinking_msg = await message.answer(
+                "⏳ پاسخ قبلی هنوز در حال تولید است، منتظر می‌مانم..."
+            )
+            answer = await _wait_for_new_answer(token, session_id, pre_count, max_wait=180)
+            try:
+                await thinking_msg.delete()
+            except Exception:
+                pass
+            if answer:
+                await _send_long(message, answer)
+            else:
+                await message.answer(
+                    "⏰ پردازش قبلی طولانی شد. چند لحظه دیگر پیام بدهید یا از «📈 گزارش‌ها» چک کنید."
+                )
+            return
+        await message.answer(f"❌ خطا: {error_text}")
+        return
 
-    # Poll for response
+    # Poll for the NEW assistant answer (after pre_count)
     thinking_msg = await message.answer("🔄 در حال پردازش...")
-
-    # Track last assistant message to avoid duplicates
-    last_answer_hash = None
-
-    for _ in range(90):
-        await asyncio.sleep(1)
-        messages = await gateway.get_messages(token, session_id)
-        if messages and isinstance(messages, list):
-            for msg in reversed(messages):
-                if msg.get("role") == "assistant" and msg.get("content"):
-                    answer = msg["content"]
-                    answer_hash = hash(answer)
-                    if answer_hash == last_answer_hash:
-                        continue  # Skip duplicate
-                    last_answer_hash = answer_hash
-                    try:
-                        await thinking_msg.delete()
-                    except Exception:
-                        pass
-                    # Send answer as plain text (avoid Markdown parse errors)
-                    for chunk_start in range(0, max(len(answer), 1), 4000):
-                        chunk = answer[chunk_start:chunk_start + 4000]
-                        if chunk:
-                            try:
-                                await message.answer(chunk)
-                            except Exception:
-                                pass
-                    return
-
+    answer = await _wait_for_new_answer(token, session_id, pre_count, max_wait=180)
     try:
         await thinking_msg.delete()
     except Exception:
         pass
-    await message.answer("⏰ پاسخ دریافت نشد. لطفاً دوباره تلاش کنید.")
+    if answer:
+        await _send_long(message, answer)
+    else:
+        await message.answer("⏰ پاسخ دریافت نشد. لطفاً دوباره تلاش کنید.")
+
+
+async def _wait_for_new_answer(token: str, session_id: str, pre_count: int,
+                               max_wait: int = 180) -> Optional[str]:
+    """Poll until a NEW assistant message (index >= pre_count) arrives."""
+    for i in range(max_wait):
+        await asyncio.sleep(1)
+        messages = await gateway.get_messages(token, session_id)
+        if not isinstance(messages, list):
+            continue
+        # Only consider messages added after our snapshot
+        new_msgs = messages[pre_count:]
+        for msg in reversed(new_msgs):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                return msg["content"]
+    return None
+
+
+async def _send_long(message: Message, answer: str):
+    """Send an answer, chunked at Telegram's 4096-char limit (plain text)."""
+    for chunk_start in range(0, max(len(answer), 1), 4000):
+        chunk = answer[chunk_start:chunk_start + 4000]
+        if chunk:
+            try:
+                await message.answer(chunk)
+            except Exception:
+                pass
 
 
 # ============================================================================
