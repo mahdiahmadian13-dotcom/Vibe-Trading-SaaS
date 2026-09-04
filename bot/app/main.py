@@ -1104,7 +1104,11 @@ async def cb_swarm_run(callback: CallbackQuery, state: FSMContext):
 
 VAR_SUGGESTIONS = {
     "target": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "TON", "TRX",
-               "AVAX", "LINK", "DOT"],
+               "AVAX", "LINK", "DOT",
+               # page 2: more crypto + popular US equities
+               "TSLA", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "NFLX", "AMD",
+               # page 3: commodities + FX
+               "طلا", "نفت", "نقره", "EUR/USD", "GBP/USD", "USD/JPY"],
     "timeframe": ["کوتاه‌مدت ۱-۴ هفته", "میان‌مدت ۱-۳ ماه", "بلندمدت ۳-۱۲ ماه"],
     "market": ["کریپتو", "سهام آمریکا", "سهام چین", "بازار جهانی چند-دارایی"],
     "goal": ["چشم‌انداز ماه آینده", "کشف فرصت‌های کم‌ارزش", "تحلیل ریسک پرتفوی", "انتخاب سهم ماهانه"],
@@ -1151,6 +1155,41 @@ def _var_title_desc(var_name: str, engine_desc: str, required: bool):
         desc = engine_desc or "یکی از گزینه‌ها را انتخاب کن یا مقدارش را بنویس."
     note = "" if required else "\n⭕ این مورد اختیاری است — می‌توانی ردش کنی."
     return title, desc + note
+
+
+# ---------------------------------------------------------------------------
+# Symbol resolver — maps Persian/English friendly names to engine conventions.
+# The engine accepts: crypto tickers (BTC), US equities (AAPL.US), A-shares
+# (600519.SH), HK (00700.HK), Canada (TD.TO), FX (EUR/USD), futures (GC=F, CL=F).
+SYMBOL_ALIASES = {
+    "طلا": "GC=F", "طلات": "GC=F", "gold": "GC=F",
+    "نقره": "SI=F", "silver": "SI=F",
+    "نفت": "CL=F", "نفت خام": "CL=F", "oil": "CL=F", "wTi": "CL=F",
+    "گاز": "NG=F", "natural gas": "NG=F",
+    "مس": "HG=F", "copper": "HG=F",
+    "بیت‌کوین": "BTC", "بیت کوین": "BTC", "bitcoin": "BTC",
+    "اتریوم": "ETH", "ethereum": "ETH",
+    "تسلا": "TSLA", "tesla": "TSLA",
+    "اپل": "AAPL.US", "apple": "AAPL.US",
+    "انویدیا": "NVDA", "nvidia": "NVDA",
+    "مایکروسافت": "MSFT", "microsoft": "MSFT",
+    "گوگل": "GOOGL", "آلفابت": "GOOGL", "google": "GOOGL",
+    "آمازون": "AMZN", "amazon": "AMZN",
+    "متا": "META", "فیس‌بوک": "META", "facebook": "META",
+    "دلار": "EUR/USD", "یورو دلار": "EUR/USD",
+    "شاخص نزدک": "QQQ", "نزدک": "QQQ",
+    "شاخص داوجونز": "DIA", "داوجونز": "DIA",
+    "اس‌اند‌پی": "SPY", "شاخص اس‌اند‌پی": "SPY",
+}
+
+
+def resolve_symbol(text: str) -> str | None:
+    """Try to map a friendly name to an engine symbol (case-insensitive)."""
+    t = text.strip().lower()
+    for k, v in SYMBOL_ALIASES.items():
+        if t == k.lower() or (len(t) >= 3 and t in k.lower()):
+            return v
+    return None
 
 
 def _var_keyboard(var_name: str, page: int = 1, user_suggestions: list | None = None):
@@ -1354,7 +1393,17 @@ async def cb_svar_pick(callback: CallbackQuery, state: FSMContext):
     """User picked a suggestion (or 'type manually')."""
     choice = callback.data.split(":", 1)[1]
     if choice == "__text__":
-        await callback.message.edit_text("✍️ مقدار را بنویسید:")
+        var_meta = next((v for v in data.get("sw_vars", []) if v["name"] == data.get("sw_current_var", "")), {})
+        is_target = data.get("sw_current_var") == "target"
+        hint = ""
+        if is_target:
+            hint = (
+                "💡 می‌تونی هر نمادی بنویسی: کریپتو (BTC)، سهام آمریکا (TSLA)، "
+                "فارکس (EUR/USD)، طلا یا نفت — یا اسم فارسی مثل «تسلا» یا «طلا»."
+            )
+        await callback.message.edit_text(
+            f"✍️ مقدار «{var_meta.get('name', data.get('sw_current_var', ''))}» را بنویسید:\n\n{hint}"
+        )
         await state.set_state(ChatState.swarm_var_input)
         await callback.answer()
         return
@@ -1383,7 +1432,11 @@ async def process_swarm_var(message: Message, state: FSMContext):
     if optional and text.lower() in ("رد", "skip", "-"):
         pass  # leave unset
     else:
-        answers[var_name] = text
+        # Symbol-aware: resolve friendly Persian/English names for asset fields
+        resolved = resolve_symbol(text) if var_name in ("target", "asset", "symbol") else None
+        answers[var_name] = resolved or text
+        if resolved:
+            await message.answer(f"✅ شناسایی شد: **{text}** → `{resolved}`")
 
     await state.update_data(sw_answers=answers)
     await state.set_state(ChatState.main_menu)
