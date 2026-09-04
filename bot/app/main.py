@@ -968,15 +968,33 @@ VAR_SUGGESTIONS = {
 }
 
 
-def _var_keyboard(var_name: str, user_suggestions: list | None = None):
-    """Keyboard for a swarm form variable — suggestions or skip-to-text."""
-    rows = []
+def _var_keyboard(var_name: str, page: int = 1, user_suggestions: list | None = None):
+    """Keyboard for a swarm form variable with pagination (6 per page, 3 per row)."""
     suggestions = user_suggestions or VAR_SUGGESTIONS.get(var_name, [])
-    if suggestions:
-        # 3 per row
-        for i in range(0, len(suggestions), 3):
-            rows.append([InlineKeyboardButton(text=s, callback_data=f"svar:{s[:56]}")
-                         for s in suggestions[i:i + 3]])
+    rows = []
+
+    PER_PAGE = 6
+    total = len(suggestions)
+    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+    page = max(1, min(page, pages))
+
+    start = (page - 1) * PER_PAGE
+    chunk = suggestions[start:start + PER_PAGE]
+
+    for i in range(0, len(chunk), 3):
+        rows.append([InlineKeyboardButton(text=s, callback_data=f"svar:{s[:56]}")
+                     for s in chunk[i:i + 3]])
+
+    # Pagination row (only if more than one page)
+    if pages > 1:
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton(text="◀ قبلی", callback_data=f"svpage:{var_name[:40]}:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"📄 {page}/{pages}", callback_data="noop"))
+        if page < pages:
+            nav.append(InlineKeyboardButton(text="بعدی ▶", callback_data=f"svpage:{var_name[:40]}:{page + 1}"))
+        rows.append(nav)
+
     rows.append([InlineKeyboardButton(text="✍️ نوشتن دستی", callback_data="svar:__text__")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1034,7 +1052,7 @@ async def _ask_next_swarm_var(callback_or_message, state: FSMContext, telegram_u
         f"_{desc}_\n\n"
         f"({len(answers) + 1} از {len(variables)})"
     )
-    kb = _var_keyboard(name)
+    kb = _var_keyboard(name, page=1)
 
     msg = (
         callback_or_message.message
@@ -1047,6 +1065,25 @@ async def _ask_next_swarm_var(callback_or_message, state: FSMContext, telegram_u
 
     if hasattr(callback_or_message, "answer"):
         await callback_or_message.answer()
+
+
+@router.callback_query(F.data.startswith("svpage:"))
+async def cb_svar_page(callback: CallbackQuery, state: FSMContext):
+    """Pagination for a swarm form variable keyboard."""
+    _, var_name, page_s = callback.data.split(":", 2)
+    try:
+        page = int(page_s)
+    except ValueError:
+        page = 1
+
+    ask_text = f"❓ {var_name}\n(صفحه {page})"
+    await callback.message.edit_text(
+        ask_text,
+        reply_markup=_var_keyboard(var_name, page=page),
+    )
+    await state.update_data(sw_current_var=var_name)
+    await state.set_state(ChatState.swarm_var_input)
+    await callback.answer()
 
 
 async def _track_swarm_progress(status_msg, source, state: FSMContext, token: str,
