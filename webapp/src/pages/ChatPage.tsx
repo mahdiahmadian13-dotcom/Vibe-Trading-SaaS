@@ -139,7 +139,7 @@ export default function ChatPage() {
   /* -------------------------------- view ---------------------------------- */
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-120px)] w-full max-w-3xl flex-col px-4 pt-4 md:h-[calc(100dvh-150px)] md:px-8 md:pt-6">
+    <div className="mx-auto flex h-[calc(100dvh-150px)] w-full max-w-3xl flex-col px-4 pt-4 md:h-[calc(100dvh-170px)] md:px-8 md:pt-6">
       {/* header */}
       <div className="mb-3 flex items-center justify-between">
         <div>
