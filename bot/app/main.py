@@ -159,6 +159,10 @@ class ChatState(StatesGroup):
     awaiting_register_pass = State()
     awaiting_login_user = State()
     awaiting_login_pass = State()
+    # Dynamic swarm form — one state per active variable
+    swarm_var_input = State()
+
+
 # ============================================================================
 # User Token/Session Store (Redis-backed)
 # ============================================================================
@@ -905,34 +909,155 @@ async def cb_swarm(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("sw:"))
 async def cb_swarm_run(callback: CallbackQuery, state: FSMContext):
+    """Start the dynamic form: fetch preset variables, ask them one by one."""
     preset_name = callback.data.split(":", 1)[1]
     token = await get_user_token(callback.from_user.id)
-
-    status_msg = await callback.message.edit_text(
-        f"🤖 در حال راه‌اندازی تیم...\n\n"
-        f"پریست: {preset_name}\n"
-        f"⏳ زمان تقریبی: ۱۵-۲۰ دقیقه\n"
-        f"📊 گزارش فارسی تحویل داده خواهد شد.",
-    )
-
-    result = await gateway.create_swarm_run(token, preset_name, {})
-
-    if "error" in result:
-        await callback.message.edit_text(f"❌ خطا: {result['error']}", reply_markup=back_to_menu_kb())
+    if not token:
+        await callback.message.edit_text("❌ ابتدا وارد شوید.", reply_markup=back_to_menu_kb())
         await callback.answer()
         return
 
-    run_id = result.get("id")
+    presets = await gateway.get_swarm_presets(token)
+    preset = None
+    if isinstance(presets, list):
+        preset = next((p for p in presets if p.get("name") == preset_name), None)
+    if not preset:
+        await callback.message.edit_text("❌ پریست یافت نشد.", reply_markup=back_to_menu_kb())
+        await callback.answer()
+        return
 
-    # Live progress tracking — edit message every 30s
+    variables = preset.get("variables", [])
+    # Filter: required vars + any optional ones (all asked, optional skippable)
+    await state.update_data(sw_preset=preset_name, sw_vars=variables, sw_answers={})
+
+    if not variables:
+        # No variables — launch immediately
+        user_vars = {"output_language": "Persian (Farsi) — write the ENTIRE final report in fluent Persian"}
+        status = await callback.message.edit_text(
+            f"🤖 در حال راه‌اندازی تیم...\n\nپریست: {preset_name}\n⏳ ۱۵-۲۰ دقیقه."
+        )
+        await state.set_state(ChatState.main_menu)
+        result = await gateway.create_swarm_run(token, preset_name, user_vars)
+        if "error" in result:
+            await status.edit_text(f"❌ خطا: {result['error']}", reply_markup=back_to_menu_kb())
+            await callback.answer()
+            return
+        await _track_swarm_progress(status, callback, state, token, preset_name, result.get("id", ""))
+        return
+
+    await _ask_next_swarm_var(callback, state, callback.from_user.id)
+
+
+# ============================================================================
+# Dynamic Swarm Form — smart keyboards per common variable, text input otherwise
+# ============================================================================
+
+VAR_SUGGESTIONS = {
+    "target": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"],
+    "timeframe": ["کوتاه‌مدت ۱-۴ هفته", "میان‌مدت ۱-۳ ماه", "بلندمدت ۳-۱۲ ماه"],
+    "market": ["کریپتو", "سهام آمریکا", "سهام چین", "بازار جهانی چند-دارایی"],
+    "goal": ["چشم‌انداز ماه آینده", "کشف فرصت‌های کم‌ارزش", "تحلیل ریسک پرتفوی", "انتخاب سهم ماهانه"],
+    "horizon": ["۱ ماه", "۳ ماه", "۶ ماه", "۱ سال"],
+    "risk_profile": ["محافظه‌کار", "متعادل", "تهاجمی"],
+    "risk_tolerance": ["محافظه‌کار", "متعادل", "تهاجمی"],
+    "view": ["صعودی", "نزولی", "خنثی", "نوسانی"],
+    "target_variable": ["بازده", "جهت حرکت", "نوسان"],
+    "factor_type": ["ارزش", "مومنتوم", "کیفیت", "رشد"],
+    "fund_type": ["سهامی", "درآمد ثابت", "مختلط", "شاخصی"],
+    "sector": ["بانک", "انرژی", "نیمه‌هادی", "مصرفی"],
+}
+
+
+def _var_keyboard(var_name: str, user_suggestions: list | None = None):
+    """Keyboard for a swarm form variable — suggestions or skip-to-text."""
+    rows = []
+    suggestions = user_suggestions or VAR_SUGGESTIONS.get(var_name, [])
+    if suggestions:
+        # 3 per row
+        for i in range(0, len(suggestions), 3):
+            rows.append([InlineKeyboardButton(text=s, callback_data=f"svar:{s[:56]}")
+                         for s in suggestions[i:i + 3]])
+    rows.append([InlineKeyboardButton(text="✍️ نوشتن دستی", callback_data="svar:__text__")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _ask_next_swarm_var(callback_or_message, state: FSMContext, telegram_user_id: int):
+    """Ask the next unset required variable; when all set → launch the run.
+
+    Works for both CallbackQuery.message and Message senders.
+    """
+    data = await state.get_data()
+    preset_name = data.get("sw_preset", "")
+    variables = data.get("sw_vars", [])      # [{name, description, required}]
+    answers = data.get("sw_answers", {})
+
+    token = await get_user_token(telegram_user_id)
+    if not token:
+        return
+
+    next_var = next((v for v in variables if v["name"] not in answers), None)
+
+    if next_var is None:
+        # All variables collected → launch
+        user_vars = dict(answers)
+        user_vars["output_language"] = "Persian (Farsi) — write the ENTIRE final report in fluent Persian"
+
+        msg = (
+            callback_or_message.message
+            if hasattr(callback_or_message, "message") and not hasattr(callback_or_message, "chat")
+            else callback_or_message
+        )
+        status = await msg.edit_text(
+            f"🤖 در حال راه‌اندازی تیم...\n\n"
+            f"پریست: {preset_name}\n"
+            + "\n".join(f"• {k}: {v}" for k, v in answers.items())
+            + "\n\n⏳ ۱۵-۲۰ دقیقه — پیشرفت لحظه‌ای همین‌جا نمایش داده می‌شود."
+        )
+        await state.set_state(ChatState.main_menu)
+
+        result = await gateway.create_swarm_run(token, preset_name, user_vars)
+        if "error" in result:
+            await status.edit_text(f"❌ خطا: {result['error']}", reply_markup=back_to_menu_kb())
+            return
+        await _track_swarm_progress(status, callback_or_message, state, token, preset_name, result.get("id", ""))
+        return
+
+    # Ask the next variable
+    name = next_var["name"]
+    desc = next_var.get("description", "")
+    required = next_var.get("required", False)
+    optional_note = "" if required else " (اختیاری — بنویس «رد» تا خالی بماند)"
+
+    ask_text = (
+        f"🤖 **فرم تحلیل تیمی**\n\n"
+        f"❓ {name}{optional_note}\n"
+        f"_{desc}_\n\n"
+        f"({len(answers) + 1} از {len(variables)})"
+    )
+    kb = _var_keyboard(name)
+
+    msg = (
+        callback_or_message.message
+        if hasattr(callback_or_message, "message") and not hasattr(callback_or_message, "chat")
+        else callback_or_message
+    )
+    await msg.edit_text(ask_text, reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(ChatState.swarm_var_input)
+    await state.update_data(sw_current_var=name)
+
+    if hasattr(callback_or_message, "answer"):
+        await callback_or_message.answer()
+
+
+async def _track_swarm_progress(status_msg, source, state: FSMContext, token: str,
+                                preset_name: str, run_id: str):
+    """Live per-agent progress loop (moved out of the old handler)."""
     last_text = ""
-    for i in range(1200):  # max 20 min
+    for i in range(40):  # 40 * 30s = 20 min
         await asyncio.sleep(30)
         status = await gateway.get_swarm_run(token, run_id)
-
         if "error" in status:
             break
-
         current_status = status.get("status", "running")
         tasks = status.get("tasks", [])
         done = sum(1 for t in tasks if t.get("status") == "completed")
@@ -944,7 +1069,6 @@ async def cb_swarm_run(callback: CallbackQuery, state: FSMContext):
             f"📊 پیشرفت: {done}/{total} ایجنت\n"
             f"⏳ {i // 2} دقیقه از ~۲۰ دقیقه\n\n"
         )
-        # Per-agent status
         for t in tasks:
             agent = t.get("agent_name", "?")[:20]
             s = t.get("status", "?")
@@ -956,46 +1080,73 @@ async def cb_swarm_run(callback: CallbackQuery, state: FSMContext):
                 await status_msg.edit_text(progress_text)
                 last_text = progress_text
             except Exception:
-                pass  # Message unchanged or edit failed
+                pass
 
         if current_status == "completed":
             report = status.get("final_report", "")
-            tasks = status.get("tasks", [])
-            # Full report in chat (chunks)
             for chunk_start in range(0, max(len(report), 1), 4000):
                 chunk = report[chunk_start:chunk_start + 4000]
                 if chunk:
-                    await callback.message.answer(chunk)
-
-            # Auto-generate the PDF version
+                    await status_msg.answer(chunk)
             pdf_note = "✅ گزارش کامل بالا ارسال شد."
             try:
-                from app.pdf_report import build_swarm_pdf as _bswarm
-                pdf_bytes = await asyncio.to_thread(
-                    _bswarm, preset_name, preset_name, report, tasks
-                )
+                pdf_bytes = await asyncio.to_thread(build_swarm_pdf, preset_name, preset_name, report, tasks)
                 doc = BufferedInputFile(pdf_bytes, filename=f"swarm_{run_id[:16]}.pdf")
-                await callback.message.answer_document(
-                    doc, caption="📄 نسخه PDF گزارش (قابل ذخیره و اشتراک)"
-                )
+                await status_msg.answer_document(doc, caption="📄 نسخه PDF گزارش")
             except Exception:
-                pdf_note = "✅ گزارش کامل بالا ارسال شد. (PDF در دسترس نیست)"
-
+                pdf_note += " (PDF در دسترس نیست)"
             kb = [[InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")]]
-            await callback.message.answer(pdf_note, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+            await status_msg.answer(pdf_note, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
             return
         elif current_status == "failed":
-            await callback.message.edit_text(
-                "❌ اجرای تیم ناموفق بود. دوباره تلاش کنید.",
-                reply_markup=back_to_menu_kb(),
-            )
+            await status_msg.edit_text("❌ اجرای تیم ناموفق بود.", reply_markup=back_to_menu_kb())
             return
 
-    await callback.message.edit_text(
-        "⏰ زمان انتظار تمام شد. بعداً از «🤖 تیم‌های تحلیل» وضعیت را چک کنید.",
+    await status_msg.edit_text(
+        "⏰ زمان انتظار تمام شد. بعداً وضعیت را چک کنید.",
         reply_markup=back_to_menu_kb(),
     )
-    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("svar:"))
+async def cb_svar_pick(callback: CallbackQuery, state: FSMContext):
+    """User picked a suggestion (or 'type manually')."""
+    choice = callback.data.split(":", 1)[1]
+    if choice == "__text__":
+        await callback.message.edit_text("✍️ مقدار را بنویسید:")
+        await state.set_state(ChatState.swarm_var_input)
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    var_name = data.get("sw_current_var", "")
+    answers = data.get("sw_answers", {})
+    answers[var_name] = choice
+    await state.update_data(sw_answers=answers)
+    await state.set_state(ChatState.main_menu)  # exit input state
+    await _ask_next_swarm_var(callback, state, callback.from_user.id)
+
+
+@router.message(ChatState.swarm_var_input)
+async def process_swarm_var(message: Message, state: FSMContext):
+    """Free-text answer for a swarm variable."""
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    var_name = data.get("sw_current_var", "")
+    variables = data.get("sw_vars", [])
+    answers = data.get("sw_answers", {})
+
+    var_meta = next((v for v in variables if v["name"] == var_name), {})
+    optional = not var_meta.get("required", False)
+
+    if optional and text.lower() in ("رد", "skip", "-"):
+        pass  # leave unset
+    else:
+        answers[var_name] = text
+
+    await state.update_data(sw_answers=answers)
+    await state.set_state(ChatState.main_menu)
+    await _ask_next_swarm_var(message, state, message.from_user.id)
 
 
 # ============================================================================
