@@ -239,12 +239,17 @@ def _sparkline_equity(equity) -> str:
     return f"{line}\nکمترین: {lo:,.0f} | بیشترین: {hi:,.0f}"
 
 
-def _render_equity_chart(run_id: str, equity, metrics: dict) -> str | None:
-    """Render equity curve + drawdown chart to a PNG. Returns path or None."""
+def _render_equity_chart(run_id: str, equity, metrics: dict, benchmark=None, trade_markers=None) -> str | None:
+    """Render pro report chart: equity + benchmark + drawdown + trade markers.
+
+    Returns PNG path or None. All inputs optional beyond equity.
+    """
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+        from datetime import datetime
     except ImportError:
         return None
 
@@ -252,53 +257,167 @@ def _render_equity_chart(run_id: str, equity, metrics: dict) -> str | None:
     if len(values) < 4:
         return None
 
-    # Downsample if huge
-    if len(values) > 500:
-        step = len(values) // 500
-        values = values[::step]
-        labels = labels[::step]
+    # Parse dates where possible
+    dates = []
+    for lab in labels:
+        try:
+            dates.append(datetime.strptime(str(lab)[:10], "%Y-%m-%d"))
+        except Exception:
+            dates.append(None)
+    if not any(dates):
+        dates = list(range(len(values)))
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
-                                    gridspec_kw={"height_ratios": [3, 1]})
+    # Downsample if huge
+    if len(values) > 700:
+        step = len(values) // 700
+        idx = list(range(0, len(values), step))
+        values = [values[i] for i in idx]
+        dates = [dates[i] for i in idx]
+
+    # Benchmark series (buy & hold normalized to same start)
+    bm_values, bm_dates = [], []
+    if benchmark and isinstance(benchmark, list) and len(benchmark) > 4:
+        for point in benchmark:
+            if isinstance(point, dict):
+                v = point.get("close") or point.get("price") or point.get("value")
+                d = point.get("time") or point.get("date") or point.get("timestamp")
+                if v is not None:
+                    try:
+                        bm_values.append(float(v))
+                        try:
+                            bm_dates.append(datetime.strptime(str(d)[:10], "%Y-%m-%d"))
+                        except Exception:
+                            bm_dates.append(None)
+                    except (ValueError, TypeError):
+                        pass
+        if bm_values:
+            base = bm_values[0]
+            scale = values[0] / base if base else 1
+            bm_values = [v * scale for v in bm_values]
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(11, 6.5), sharex=True,
+        gridspec_kw={"height_ratios": [3.2, 1]},
+    )
     fig.patch.set_facecolor("#0d1117")
     for ax in (ax1, ax2):
         ax.set_facecolor("#0d1117")
-        ax.tick_params(colors="#8b949e")
+        ax.tick_params(colors="#8b949e", labelsize=8)
         for spine in ax.spines.values():
             spine.set_color("#30363d")
         ax.grid(True, alpha=0.15, color="#8b949e")
 
-    # Equity curve
-    x = range(len(values))
-    ax1.plot(x, values, color="#2ea043", linewidth=1.6)
-    ax1.fill_between(x, values, min(values), color="#2ea043", alpha=0.12)
-    ax1.set_ylabel("Equity ($)", color="#8b949e")
-    ax1.set_title(
-        f"Equity Curve — Return: {metrics.get('total_return', 0):.1%} | Sharpe: {metrics.get('sharpe', 0):.2f}",
-        color="#e6edf3", fontsize=11,
-    )
+    # --- Equity + benchmark ---
+    ax1.plot(dates, values, color="#2ea043", linewidth=1.7, label="Strategy")
+    ax1.fill_between(dates, values, min(min(values), min(bm_values) if bm_values else min(values)),
+                     color="#2ea043", alpha=0.10)
+    if bm_values and len(bm_values) == len(bm_dates):
+        ax1.plot(bm_dates, bm_values, color="#58a6ff", linewidth=1.2, alpha=0.85,
+                 linestyle="--", label="Buy & Hold")
+    ax1.set_ylabel("Equity ($)", color="#8b949e", fontsize=9)
+    tr = metrics.get("total_return", 0)
+    br = metrics.get("benchmark_return")
+    title = f"Return: {tr:.1%}"
+    if br is not None:
+        title += f"  |  B&H: {br:.1%}  |  Excess: {metrics.get('excess_return', 0):+.1%}"
+    title += f"  |  Sharpe: {metrics.get('sharpe', 0):.2f}"
+    ax1.set_title(title, color="#e6edf3", fontsize=11, loc="left")
+    if bm_values:
+        leg = ax1.legend(loc="upper left", fontsize=8)
+        for t in leg.get_texts():
+            t.set_color("#e6edf3")
 
-    # Drawdown
+    # --- Trade markers ---
+    if trade_markers:
+        buys_x, buys_y, sells_x, sells_y = [], [], [], []
+        for tmk in trade_markers:
+            side = str(tmk.get("side", "")).lower()
+            ts = str(tmk.get("timestamp", ""))[:10]
+            price = tmk.get("price")
+            try:
+                px = float(price)
+            except (TypeError, ValueError):
+                continue
+            try:
+                dx = datetime.strptime(ts, "%Y-%m-%d")
+            except Exception:
+                continue
+            if side == "buy":
+                buys_x.append(dx)
+                buys_y.append(px)
+            elif side == "sell":
+                sells_x.append(dx)
+                sells_y.append(px)
+        # Scale price axis to equity axis with a twin
+        if buys_x or sells_x:
+            ax1b = ax1.twinx()
+            ax1b.set_facecolor("none")
+            all_px = buys_y + sells_y
+            eq_lo, eq_hi = min(values), max(values)
+            px_lo, px_hi = (min(all_px), max(all_px)) if all_px else (0, 1)
+            span = (px_hi - px_lo) or 1
+            ax1b.set_ylim(px_lo - span * 0.2, px_hi + span * 0.2)
+            ax1b.tick_params(colors="#30363d", labelsize=7)
+            for spine in ax1b.spines.values():
+                spine.set_color("#30363d")
+            ax1b.set_ylabel("Price", color="#30363d", fontsize=8)
+            if buys_x:
+                ax1b.scatter(buys_x, buys_y, marker="^", color="#2ea043", s=45,
+                             zorder=5, label="Buy", edgecolors="#0d1117")
+            if sells_x:
+                ax1b.scatter(sells_x, sells_y, marker="v", color="#f85149", s=45,
+                             zorder=5, label="Sell", edgecolors="#0d1117")
+            leg2 = ax1b.legend(loc="lower right", fontsize=8)
+            for t in leg2.get_texts():
+                t.set_color("#e6edf3")
+
+    # --- Drawdown ---
     peak = values[0]
     dd = []
     for v in values:
         peak = max(peak, v)
         dd.append((v - peak) / peak if peak else 0)
-    ax2.fill_between(x, dd, 0, color="#f85149", alpha=0.4)
-    ax2.plot(x, dd, color="#f85149", linewidth=1)
-    ax2.set_ylabel("Drawdown", color="#8b949e")
+    ax2.fill_between(dates, dd, 0, color="#f85149", alpha=0.35)
+    ax2.plot(dates, dd, color="#f85149", linewidth=1)
+    ax2.set_ylabel("Drawdown", color="#8b949e", fontsize=9)
+    mdd = metrics.get("max_drawdown")
+    if mdd is not None:
+        ax2.annotate(
+            f"MDD {mdd:.1%}", xy=(dates[dd.index(min(dd))], min(dd)),
+            xytext=(10, -5), textcoords="offset points",
+            color="#f85149", fontsize=8,
+        )
 
-    # X labels: show a few dates
-    if labels and any(labels):
-        tick_idx = [i for i in range(0, len(labels), max(1, len(labels) // 6))]
-        ax2.set_xticks(tick_idx)
-        ax2.set_xticklabels([labels[i][:10] for i in tick_idx], rotation=0, fontsize=7)
+    if isinstance(dates[0], datetime):
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax2.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
 
     plt.tight_layout()
     path = f"/tmp/equity_{run_id[:20]}.png"
-    fig.savefig(path, dpi=110, facecolor=fig.get_facecolor())
+    fig.savefig(path, dpi=115, facecolor=fig.get_facecolor())
     plt.close(fig)
     return path
+
+
+def _format_trades_table(trade_log, max_rows: int = 8) -> str:
+    """Format trade log as a monospace table (Telegram-friendly)."""
+    if not trade_log:
+        return ""
+    rows = []
+    for t in trade_log[:max_rows]:
+        ts = str(t.get("timestamp", ""))[:10]
+        side = str(t.get("side", "?")).lower()
+        icon = "🟢" if side == "buy" else "🔴"
+        try:
+            price = float(t.get("price", 0))
+            ret = float(t.get("return_pct", 0))
+            pnl = float(t.get("pnl", 0))
+        except (TypeError, ValueError):
+            continue
+        rows.append(f"{icon} {ts}  {price:>10,.0f}  {ret:>+7.1f}%  {pnl:>+10,.0f}$")
+    header = " وقت        قیمت      بازده    سود/زیان"
+    sep = "─" * 44
+    return "📋 **معاملات:**\n```\n" + header + "\n" + sep + "\n" + "\n".join(rows) + "\n```"
 
 
 # ============================================================================
@@ -1011,7 +1130,7 @@ async def cb_reports(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("detail:"))
 async def cb_run_detail(callback: CallbackQuery):
-    """Show full backtest report for a specific run."""
+    """Show full backtest report: metrics + risk + chart + trades."""
     run_id = callback.data.split(":", 1)[1]
     token = await get_user_token(callback.from_user.id)
     if not token:
@@ -1027,77 +1146,122 @@ async def cb_run_detail(callback: CallbackQuery):
         await callback.answer()
         return
 
-    # Format full report
     metrics = detail.get("metrics", {})
-    prompt = str(detail.get("prompt", "بکتست"))[:50]
-    status = detail.get("status", "?")
+    prompt = str(detail.get("prompt", "بکتست"))[:60]
     elapsed = detail.get("elapsed_seconds", 0)
+    rx = detail.get("risk_xray") or {}
 
-    text = f"📊 **گزارش بکتست**\n\n"
-    text += f"📝 {prompt}\n"
-    text += f"⏱ زمان اجرا: {elapsed:.0f} ثانیه\n\n"
+    # ---------- Text report ----------
+    text = f"📊 **گزارش بکتست**\n\n📝 {prompt}\n"
+    codes = (detail.get("run_context") or {}).get("codes") or []
+    if codes:
+        text += f"🏷 دارایی‌ها: {', '.join(str(c) for c in codes[:4])}\n"
+    ctx = (detail.get("run_context") or {})
+    if ctx.get("start_date") or ctx.get("end_date"):
+        text += f"📅 بازه: {ctx.get('start_date', '?')} → {ctx.get('end_date', '?')}\n"
 
-    # Key metrics
-    text += "**📈 معیارهای کلیدی:**\n"
+    # Returns & risk
+    text += "\n**📈 بازده:**\n"
     if metrics.get("final_value"):
         text += f"💰 ارزش نهایی: ${metrics['final_value']:,.0f}\n"
     if metrics.get("total_return") is not None:
-        text += f"📈 بازده کل: {metrics['total_return']:.1%}\n"
+        text += f"📈 بازده کل: {metrics['total_return']:+.1%}\n"
     if metrics.get("annual_return") is not None:
-        text += f"📅 بازده سالانه: {metrics['annual_return']:.1%}\n"
-    if metrics.get("sharpe") is not None:
-        text += f"📊 شارپ: {metrics['sharpe']:.2f}\n"
+        text += f"📅 سالانه: {metrics['annual_return']:+.1%}\n"
+
+    text += "\n**⚠️ ریسک:**\n"
     if metrics.get("max_drawdown") is not None:
         text += f"📉 حداکثر افت: {metrics['max_drawdown']:.1%}\n"
+    vol = (rx.get("volatility") or {}).get("annualized_vol") or metrics.get("risk_xray_annualized_vol")
+    if vol is not None:
+        text += f"🌊 نوسان سالانه: {vol:.1%}\n"
+    if metrics.get("sharpe") is not None:
+        text += f"📊 شارپ: {metrics['sharpe']:.2f}\n"
+    if metrics.get("sortino") is not None:
+        text += f"📊 سورتینو: {metrics['sortino']:.2f}\n"
+    if metrics.get("calmar") is not None:
+        text += f"📊 کالمار: {metrics['calmar']:.2f}\n"
+    var95 = (rx.get("tail_risk") or {}).get("var_95")
+    if var95 is not None:
+        text += f"🎲 VaR 95% روزانه: {var95:.1%}\n"
+
+    # Trades
+    text += "\n**🔄 فعالیت:**\n"
     if metrics.get("win_rate") is not None:
         text += f"🎯 نرخ برد: {metrics['win_rate']:.0%}\n"
     if metrics.get("trade_count") is not None:
-        text += f"🔄 تعداد معاملات: {metrics['trade_count']}\n"
-    if metrics.get("calmar") is not None:
-        text += f"📊 کالمار: {metrics['calmar']:.2f}\n"
-    if metrics.get("sortino") is not None:
-        text += f"📊 سورتینو: {metrics['sortino']:.2f}\n"
+        text += f"🔁 معاملات کامل: {metrics['trade_count']}\n"
     if metrics.get("avg_holding_days") is not None:
-        text += f"⏱ مدت نگهداری: {metrics['avg_holding_days']:.0f} روز\n"
+        text += f"⏱ میانگین نگهداری: {metrics['avg_holding_days']:.0f} روز\n"
+    turnover = metrics.get("total_turnover")
+    if turnover is not None:
+        text += f"💳 گردش کل: {turnover:,.1f}\n"
 
-    # Benchmark comparison
+    # Benchmark
     if metrics.get("benchmark_return") is not None:
-        text += f"\n**📊 مقایسه با بنچمارک:**\n"
-        text += f"📈 بازده بنچمارک: {metrics['benchmark_return']:.1%}\n"
+        text += "\n**📊 بنچمارک (خرید و نگهداری):**\n"
+        text += f"📈 بازده B&H: {metrics['benchmark_return']:+.1%}\n"
         if metrics.get("excess_return") is not None:
-            text += f"📊 بازده مازاد: {metrics['excess_return']:.1%}\n"
+            emoji = "🟢" if metrics["excess_return"] >= 0 else "🔴"
+            text += f"{emoji} بازده مازاد: {metrics['excess_return']:+.1%}\n"
         if metrics.get("information_ratio") is not None:
             text += f"📊 نسبت اطلاعات: {metrics['information_ratio']:.2f}\n"
-
-    # Trade log summary
-    trade_log = detail.get("trade_log", [])
-    if trade_log:
-        text += f"\n**📋 خلاصه معاملات:** {len(trade_log)} معامله\n"
-
-    # Strategy spec
-    strategy = detail.get("strategy_spec", "")
-    if strategy:
-        text += f"\n**🧠 استراتژی:**\n{str(strategy)[:200]}\n"
+        if metrics.get("tracking_error") is not None:
+            text += f"🌊 خطای ردیابی: {metrics['tracking_error']:.1%}\n"
 
     await callback.message.edit_text(text)
-    await callback.answer()
 
-    # Equity curve as an image chart (matplotlib) — sent as a photo
+    # ---------- Chart (PNG) ----------
     equity = detail.get("equity_curve")
-    if equity and isinstance(equity, list) and len(equity) > 2:
+    price_series = detail.get("price_series") or {}
+    # First symbol's price series doubles as the buy & hold benchmark
+    benchmark = None
+    if isinstance(price_series, dict) and price_series:
+        first = next(iter(price_series.values()))
+        if isinstance(first, list):
+            benchmark = first
+    elif isinstance(price_series, list) and price_series:
+        benchmark = price_series
+    trade_markers = detail.get("trade_markers") or []
+
+    chart_sent = False
+    if equity and isinstance(equity, list) and len(equity) > 4:
         try:
-            chart_path = await _render_equity_chart(run_id, equity, metrics)
+            # NOTE: sync function — run in a thread to avoid blocking the event loop
+            import asyncio as _aio
+            chart_path = await _aio.to_thread(
+                _render_equity_chart, run_id, equity, metrics, benchmark, trade_markers
+            )
             if chart_path:
                 photo = FSInputFile(chart_path)
                 await callback.message.answer_photo(
                     photo,
-                    caption=f"📈 نمودار سرمایه — بازده کل: {metrics.get('total_return', 0):.1%}",
+                    caption=(
+                        f"📈 استراتژی: {metrics.get('total_return', 0):+.1%}   |   "
+                        f"B&H: {metrics.get('benchmark_return', 0):+.1%}   |   "
+                        f"MDD: {metrics.get('max_drawdown', 0):.1%}"
+                    ),
                 )
-        except Exception as e:
-            # Chart rendering failed — fall back to text sparkline
-            spark = _sparkline_equity(equity)
-            if spark:
-                await callback.message.answer(f"📈 روند سرمایه:\n```\n{spark}\n```")
+                chart_sent = True
+        except Exception:
+            pass
+
+    if not chart_sent and equity:
+        spark = _sparkline_equity(equity)
+        if spark:
+            await callback.message.answer(f"📈 روند سرمایه:\n{spark}")
+
+    # ---------- Trades table ----------
+    trade_log = detail.get("trade_log") or []
+    if trade_log:
+        table = _format_trades_table(trade_log)
+        if table:
+            try:
+                await callback.message.answer(table, parse_mode="Markdown")
+            except Exception:
+                await callback.message.answer(table.replace("**", "").replace("```", ""))
+
+    await callback.answer()
 
 
 @router.callback_query(F.data == "subscription")
