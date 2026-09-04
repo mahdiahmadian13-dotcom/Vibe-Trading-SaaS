@@ -17,6 +17,7 @@ export default {
       },
       fontFamily: { sans: ["Vazirmatn", "Tahoma", "sans-serif"] },
       borderRadius: { xl2: "1.15rem" },
+      lineHeight: { "6.5": "1.65rem" },
       keyframes: {
         "fade-up": { from: { opacity: "0", transform: "translateY(10px)" }, to: { opacity: "1", transform: "none" } },
         shimmer: { from: { backgroundPosition: "200% 0" }, to: { backgroundPosition: "-200% 0" } },

@@ -11,6 +11,8 @@
       radial-gradient(1000px 520px at 88% -12%, rgba(99,102,241,.13), transparent 60%),
       radial-gradient(860px 520px at -8% 108%, rgba(139,92,246,.09), transparent 62%);
     background-attachment: fixed;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
   }
   ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-thumb { @apply rounded-full bg-white/10; }
