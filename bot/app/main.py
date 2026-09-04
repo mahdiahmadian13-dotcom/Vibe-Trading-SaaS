@@ -1103,7 +1103,8 @@ async def cb_swarm_run(callback: CallbackQuery, state: FSMContext):
 # ============================================================================
 
 VAR_SUGGESTIONS = {
-    "target": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"],
+    "target": ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "TON", "TRX",
+               "AVAX", "LINK", "DOT"],
     "timeframe": ["کوتاه‌مدت ۱-۴ هفته", "میان‌مدت ۱-۳ ماه", "بلندمدت ۳-۱۲ ماه"],
     "market": ["کریپتو", "سهام آمریکا", "سهام چین", "بازار جهانی چند-دارایی"],
     "goal": ["چشم‌انداز ماه آینده", "کشف فرصت‌های کم‌ارزش", "تحلیل ریسک پرتفوی", "انتخاب سهم ماهانه"],
@@ -1119,11 +1120,15 @@ VAR_SUGGESTIONS = {
 
 
 def _var_keyboard(var_name: str, page: int = 1, user_suggestions: list | None = None):
-    """Keyboard for a swarm form variable with pagination (6 per page, 3 per row)."""
+    """Keyboard for a swarm form variable with pagination (9 per page = 3x3).
+
+    Always shows the page indicator row when suggestions exist, so the user
+    sees the form is multi-page capable; ◀/▶ appear only when applicable.
+    """
     suggestions = user_suggestions or VAR_SUGGESTIONS.get(var_name, [])
     rows = []
 
-    PER_PAGE = 6
+    PER_PAGE = 9  # 3 columns × 3 rows
     total = len(suggestions)
     pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
     page = max(1, min(page, pages))
@@ -1135,13 +1140,16 @@ def _var_keyboard(var_name: str, page: int = 1, user_suggestions: list | None = 
         rows.append([InlineKeyboardButton(text=s, callback_data=f"svar:{s[:56]}")
                      for s in chunk[i:i + 3]])
 
-    # Pagination row (only if more than one page)
-    if pages > 1:
+    # Page indicator row — always visible when there are suggestions
+    if suggestions:
         nav = []
-        if page > 1:
+        if pages > 1 and page > 1:
             nav.append(InlineKeyboardButton(text="◀ قبلی", callback_data=f"svpage:{var_name[:40]}:{page - 1}"))
-        nav.append(InlineKeyboardButton(text=f"📄 {page}/{pages}", callback_data="noop"))
-        if page < pages:
+        if pages > 1:
+            nav.append(InlineKeyboardButton(text=f"صفحه {page} از {pages}", callback_data="noop"))
+        else:
+            nav.append(InlineKeyboardButton(text=f"📄 {total} گزینه", callback_data="noop"))
+        if pages > 1 and page < pages:
             nav.append(InlineKeyboardButton(text="بعدی ▶", callback_data=f"svpage:{var_name[:40]}:{page + 1}"))
         rows.append(nav)
 
