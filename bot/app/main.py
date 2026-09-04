@@ -1392,23 +1392,26 @@ async def _track_swarm_progress(status_msg, source, state: FSMContext, token: st
 async def cb_svar_pick(callback: CallbackQuery, state: FSMContext):
     """User picked a suggestion (or 'type manually')."""
     choice = callback.data.split(":", 1)[1]
+    data = await state.get_data()
+
     if choice == "__text__":
-        var_meta = next((v for v in data.get("sw_vars", []) if v["name"] == data.get("sw_current_var", "")), {})
-        is_target = data.get("sw_current_var") == "target"
+        var_name = data.get("sw_current_var", "")
+        var_meta = next((v for v in data.get("sw_vars", []) if v["name"] == var_name), {})
+        title, _ = _var_title_desc(var_name, var_meta.get("description", ""), var_meta.get("required", False))
+        is_target = var_name == "target"
         hint = ""
         if is_target:
             hint = (
-                "💡 می‌تونی هر نمادی بنویسی: کریپتو (BTC)، سهام آمریکا (TSLA)، "
+                "\n💡 می‌تونی هر نمادی بنویسی: کریپتو (BTC)، سهام آمریکا (TSLA)، "
                 "فارکس (EUR/USD)، طلا یا نفت — یا اسم فارسی مثل «تسلا» یا «طلا»."
             )
         await callback.message.edit_text(
-            f"✍️ مقدار «{var_meta.get('name', data.get('sw_current_var', ''))}» را بنویسید:\n\n{hint}"
+            f"✍️ {title} — لطفاً مقدارش را بنویس:{hint}"
         )
         await state.set_state(ChatState.swarm_var_input)
         await callback.answer()
         return
 
-    data = await state.get_data()
     var_name = data.get("sw_current_var", "")
     answers = data.get("sw_answers", {})
     answers[var_name] = choice
