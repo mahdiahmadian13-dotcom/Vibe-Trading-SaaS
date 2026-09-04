@@ -1563,6 +1563,7 @@ ALPHA_ZOOS = {
 ALPHA_UNIVERSES = {
     "sp500": "S&P 500 (سهام آمریکا)",
     "csi300": "CSI 300 (سهام چین)",
+    "crypto-top10": "کریپتو — سبد ۱۰ ارز برتر",
 }
 
 ALPHA_PERIODS = {
