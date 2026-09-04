@@ -231,10 +231,9 @@ async def set_user_session(user_id: int, session_id: str):
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 چت با AI", callback_data="chat")],
-        [InlineKeyboardButton(text="📊 بک‌تست", callback_data="backtest")],
         [InlineKeyboardButton(text="🤖 تیم‌های تحلیل (Swarm)", callback_data="swarm")],
         [InlineKeyboardButton(text="🧪 آزمایشگاه آلفا (Alpha Zoo)", callback_data="alphazoo")],
-        [InlineKeyboardButton(text="📈 گزارش‌ها", callback_data="reports")],
+        [InlineKeyboardButton(text="📈 گزارش بک‌تست", callback_data="reports")],
         [InlineKeyboardButton(text="👤 اشتراک من", callback_data="subscription")],
     ])
 
@@ -777,7 +776,7 @@ async def process_chat_message(message: Message, state: FSMContext):
                 await _send_long(message, answer)
             else:
                 await message.answer(
-                    "⏰ پردازش قبلی طولانی شد. چند لحظه دیگر پیام بدهید یا از «📈 گزارش‌ها» چک کنید."
+                    "⏰ پردازش قبلی طولانی شد. چند لحظه دیگر پیام بدهید یا از «📈 گزارش بک‌تست» چک کنید."
                 )
             return
         await message.answer(f"❌ خطا: {error_text}")
