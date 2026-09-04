@@ -425,6 +425,24 @@ async function loadReports() {
   } catch (e) { el.innerHTML = '<div class="empty-hint">❌ ' + esc(e.message) + '</div>'; }
 }
 
+async function authDownload(url, filename) {
+  // <a download> can't carry the Bearer token → fetch as blob with auth, then save
+  try {
+    const t = localStorage.getItem('vt_token');
+    const r = await fetch(url, {headers: {'Authorization': 'Bearer ' + t}});
+    if (!r.ok) throw new Error('خطای سرور: ' + r.status);
+    const blob = await r.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    alert('دانلود ناموفق: ' + e.message);
+  }
+}
 async function openReport(runId) {
   $('modal-bg').classList.add('open');
   $('modal').innerHTML = '<div class="spinner"></div>';
@@ -472,7 +490,7 @@ async function openReport(runId) {
         : `<div class="m-sec">این اجرا یک درخواست چت است (بک‌تست کامل نبود). پاسخ هوش مصنوعی:</div>
            <div style="background:var(--panel2);border-radius:12px;padding:16px;font-size:13.5px;line-height:2;white-space:pre-wrap;max-height:45vh;overflow-y:auto">${esc(chatAnswer || 'پاسخی ثبت نشده — از بخش چت دوباره بپرس.')}</div>`}
       <div class="modal-actions">
-        ${hasMetrics ? `<a class="a-pdf" href="/api/v1/vibe/runs/${runId}/pdf" download="backtest_${runId}.pdf">📄 دانلود PDF</a>` : ''}
+        ${hasMetrics ? `<a class="a-pdf" href="javascript:void(0)" onclick="authDownload('/api/v1/vibe/runs/${runId}/pdf', 'backtest_${runId}.pdf')">📄 دانلود PDF</a>` : ''}
         <button class="a-close" onclick="closeModal()">بستن</button>
       </div>`;
   } catch (e) {
