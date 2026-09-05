@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowRight, Check, ChevronLeft, Users, Zap } from "lucide-react";
+import { ArrowRight, Check, ChevronLeft, Download, FileText, History, RefreshCw, Users, Zap } from "lucide-react";
 import {
-  createSwarmRun, getSwarmPresets, getSwarmRun, listSwarmRuns, TASK_ICON,
+  createSwarmRun, downloadSwarmPdf, getSwarmPresets, getSwarmRun, listSwarmRuns, TASK_ICON,
   fuzzySuggest, resolveSymbol, suggestionsFor, varTitle,
-  type SwarmPreset, type SwarmRunRow, type SwarmVariable,
+  type SwarmPreset, type SwarmRunRow, type SwarmRunStatus, type SwarmVariable,
 } from "@/api/swarm";
 import { faNum } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
@@ -35,6 +35,21 @@ export default function SwarmPage() {
         <p className="mt-1.5 text-[12.5px] leading-6 text-muted md:text-[13.5px]">
           یک تیم چندعاملی انتخاب کن، متغیرها را مشخص کن و تحلیل تیمی را اجرا کن
         </p>
+        {/* tabs: new run / history — mirrors the bot's swarm menu + swhist */}
+        <div className="mt-4 flex gap-2">
+          <button
+            onClick={() => setPhase("presets")}
+            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12.5px] font-bold transition-all active:scale-95 ${phase !== "runs" && phase !== "done" ? "bg-gradient-to-l from-brand to-brand-soft text-white shadow-[0_6px_18px_rgba(99,102,241,.4)]" : "border border-line bg-white/[.03] text-muted hover:text-ink"}`}
+          >
+            <Zap size={14} /> اجرای جدید
+          </button>
+          <button
+            onClick={() => setPhase("runs")}
+            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-[12.5px] font-bold transition-all active:scale-95 ${phase === "runs" || phase === "done" ? "bg-gradient-to-l from-brand to-brand-soft text-white shadow-[0_6px_18px_rgba(99,102,241,.4)]" : "border border-line bg-white/[.03] text-muted hover:text-ink"}`}
+          >
+            <History size={14} /> تاریخچه اجراها
+          </button>
+        </div>
       </header>
 
       {error && <EmptyState icon="⚠️" title="خطا در دریافت پریست‌ها" desc={error} />}
@@ -74,8 +89,19 @@ export default function SwarmPage() {
               icon="🎉"
               title="تحلیل تیمی تکمیل شد"
               desc="گزارش کامل تیم در همین صفحه نمایش داده شد. می‌توانی تیم جدیدی اجرا کنی یا گزارش‌های قبلی را ببینی."
-              action={<Button onClick={() => { setPhase("presets"); setPreset(null); }}>تیم جدید</Button>}
+              action={
+                <div className="flex gap-2">
+                  <Button onClick={() => { setPhase("presets"); setPreset(null); }}>تیم جدید</Button>
+                  <Button variant="outline" onClick={() => setPhase("runs")}>تاریخچه اجراها</Button>
+                </div>
+              }
             />
+          </motion.div>
+        )}
+
+        {phase === "runs" && (
+          <motion.div key="runs" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+            <SwarmHistory onOpen={(id) => { setRunId(id); setPhase("tracking"); }} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -292,6 +318,172 @@ function SwarmForm({ preset, onBack, onLaunched }: {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* =============================== run history =============================== */
+/* Mirrors the bot's swhist (paginated list) + swrun (detail + PDF) flow. */
+
+const SWARM_STATUS_FA: Record<string, { label: string; tone: "success" | "failed" | "running" | "chat" }> = {
+  completed: { label: "تکمیل شد", tone: "success" },
+  running: { label: "در حال اجرا", tone: "running" },
+  in_progress: { label: "در حال اجرا", tone: "running" },
+  failed: { label: "ناموفق", tone: "failed" },
+  cancelled: { label: "لغو شد", tone: "chat" },
+};
+
+function SwarmHistory({ onOpen }: { onOpen: (id: string) => void }) {
+  const [runs, setRuns] = useState<SwarmRunRow[] | null>(null);
+  const [error, setError] = useState("");
+  const [page, setPage] = useState(0);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const PER = 5;
+
+  useEffect(() => {
+    listSwarmRuns()
+      .then((r) => setRuns(Array.isArray(r) ? r : []))
+      .catch((e) => setError(e.message || "خطا در دریافت تاریخچه"));
+  }, []);
+
+  if (!runs && !error) {
+    return (
+      <div className="space-y-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="rounded-xl2 border border-line bg-panel/50 p-5">
+            <Skeleton className="h-4 w-48" />
+            <Skeleton className="mt-2 h-3 w-32" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (error) return <EmptyState icon="⚠️" title="خطا در دریافت تاریخچه" desc={error} />;
+  if (!runs!.length) {
+    return (
+      <EmptyState
+        icon="📭"
+        title="هنوز اجرایی نداری"
+        desc="از تب «اجرای جدید» یک تیم انتخاب و اجرا کن — نتیجه اینجا ثبت می‌شود."
+      />
+    );
+  }
+
+  const maxPage = Math.max(0, Math.ceil(runs!.length / PER) - 1);
+  const chunk = runs!.slice(page * PER, page * PER + PER);
+
+  return (
+    <div className="space-y-3">
+      {chunk.map((r) => {
+        const meta = SWARM_STATUS_FA[r.status || ""] || { label: r.status || "؟", tone: "chat" as const };
+        return (
+          <motion.button
+            key={r.id}
+            whileTap={{ scale: 0.985 }}
+            onClick={() => setOpenId(openId === r.id ? null : r.id)}
+            className="w-full rounded-xl2 border border-line bg-panel/70 p-4 text-right backdrop-blur-xl transition-all duration-300 active:border-brand/50 md:hover:border-brand/40 md:p-5"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-[14px] font-extrabold">🤖 {r.preset_name || "تیم"}</div>
+                <div className="mt-1 text-[11.5px] text-muted">
+                  {r.created_at ? faNum(new Date(r.created_at).toLocaleString("fa-IR")) : ""}
+                </div>
+              </div>
+              <Badge tone={meta.tone}>
+                <StatusDot status={meta.tone} /> {meta.label}
+              </Badge>
+            </div>
+            <AnimatePresence initial={false}>
+              {openId === r.id && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.25 }}
+                  className="overflow-hidden"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <SwarmHistoryDetail id={r.id} status={r.status} onOpen={onOpen} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.button>
+        );
+      })}
+      {maxPage > 0 && (
+        <div className="flex items-center justify-center gap-2 pt-1">
+          <button
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={page === 0}
+            className="rounded-xl border border-line bg-white/[.03] px-4 py-2 text-[12.5px] font-bold text-muted transition-all active:scale-95 disabled:opacity-40"
+          >
+            ◀ قبلی
+          </button>
+          <span className="text-[12px] font-bold text-muted">📄 {faNum(page + 1)}/{faNum(maxPage + 1)}</span>
+          <button
+            onClick={() => setPage((p) => Math.min(maxPage, p + 1))}
+            disabled={page === maxPage}
+            className="rounded-xl border border-line bg-white/[.03] px-4 py-2 text-[12.5px] font-bold text-muted transition-all active:scale-95 disabled:opacity-40"
+          >
+            بعدی ▶
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SwarmHistoryDetail({ id, status, onOpen }: { id: string; status?: string; onOpen: (id: string) => void }) {
+  const [detail, setDetail] = useState<SwarmRunStatus | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const running = (status || detail?.status) === "running" || (status || detail?.status) === "in_progress";
+
+  useEffect(() => {
+    getSwarmRun(id).then(setDetail).catch(() => setDetail({ status: "failed", error: "خطا در بارگذاری" }));
+  }, [id]);
+
+  if (!detail) return <div className="mt-3 flex justify-center"><Skeleton className="h-4 w-32" /></div>;
+  const report = detail.final_report || "";
+  const tasks = detail.tasks || [];
+
+  return (
+    <div className="mt-3 border-t border-line pt-3">
+      {tasks.length > 0 && (
+        <div className="mb-3 space-y-1.5">
+          {tasks.map((t, i) => (
+            <div key={i} className="flex items-center justify-between rounded-lg bg-white/[.02] px-3 py-2 text-[12px]">
+              <span className="font-semibold">{t.agent_name || "ایجنت"}</span>
+              <span>{TASK_ICON[t.status || ""] || "⏳"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {report ? (
+        <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-xl bg-white/[.02] p-3 text-[12.5px] leading-7 text-ink/90">
+          {report.slice(0, 600)}{report.length > 600 ? "…" : ""}
+        </div>
+      ) : running ? (
+        <div className="text-[12px] text-muted">🔄 هنوز در حال اجراست — گزارش نهایی بعد از تکمیل می‌آید.</div>
+      ) : null}
+      <div className="mt-3 flex gap-2">
+        {report && (
+          <Button size="sm" onClick={() => { setPdfBusy(true); downloadSwarmPdf(id).catch(() => {}).finally(() => setPdfBusy(false)); }} disabled={pdfBusy}>
+            <Download size={14} /> {pdfBusy ? "در حال ساخت…" : "دانلود PDF کامل"}
+          </Button>
+        )}
+        {running && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => getSwarmRun(id).then(setDetail)}>
+              <RefreshCw size={14} /> رفرش وضعیت
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => onOpen(id)}>
+              <Zap size={14} /> مشاهده زنده
+            </Button>
+          </>
+        )}
+        {!running && !report && (
+          <div className="text-[12px] text-muted">گزارشی ثبت نشده است.</div>
+        )}
+      </div>
     </div>
   );
 }

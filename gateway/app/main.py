@@ -481,6 +481,41 @@ async def get_swarm_run(
     return await vibe.request("GET", f"/swarm/runs/{run_id}")
 
 
+@app.get("/api/v1/vibe/swarm/runs/{run_id}/pdf")
+async def swarm_run_pdf(
+    run_id: str,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Swarm report as PDF (ownership-checked) — same builder as the Telegram bot."""
+    result = await db.execute(
+        select(SwarmRun).where(SwarmRun.swarm_run_id == run_id, SwarmRun.user_id == user.id)
+    )
+    if not result.scalar_one_or_none() and not user.is_admin:
+        raise HTTPException(403, "این اجرا متعلق به شما نیست")
+
+    vibe = get_vibe()
+    status = await vibe.request("GET", f"/swarm/runs/{run_id}")
+    report = (status or {}).get("final_report", "")
+    if not report:
+        raise HTTPException(400, "این اجرا هنوز گزارشی ندارد (تکمیل نشده)")
+    from app.pdf_report import build_swarm_pdf  # type: ignore
+
+    try:
+        preset = (status or {}).get("preset_name", "swarm")
+        pdf_bytes = build_swarm_pdf(preset, preset, report, (status or {}).get("tasks", []))
+    except Exception as exc:
+        raise HTTPException(500, f"خطا در ساخت PDF: {exc}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="swarm_{run_id[:16]}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 # ============================================================================
 # Task Queue Routes (for heavy async tasks via workers)
 # ============================================================================

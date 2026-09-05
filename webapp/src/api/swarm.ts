@@ -44,7 +44,12 @@ export const createSwarmRun = (preset_name: string, user_vars: Record<string, st
     body: JSON.stringify({ preset_name, user_vars }),
   });
 export const getSwarmRun = (id: string) => api<SwarmRunStatus>(`/api/v1/vibe/swarm/runs/${id}`);
-export const listSwarmRuns = () => api<SwarmRunRow[]>("/api/v1/vibe/swarm/runs");
+export const listSwarmRuns = () => api<SwarmRunRow[]>(`/api/v1/vibe/swarm/runs`);
+
+export async function downloadSwarmPdf(id: string) {
+  const { authDownload } = await import("@/api/client");
+  await authDownload(`/api/v1/vibe/swarm/runs/${id}/pdf?_=${Date.now()}`, `swarm_${id.slice(0, 16)}.pdf`);
+}
 
 /* ------------------------ Persian form knowledge base ---------------------- */
 /* Mirrors bot/app/main.py (VAR_FA, VAR_SUGGESTIONS, SYMBOL_ALIASES) so the web
