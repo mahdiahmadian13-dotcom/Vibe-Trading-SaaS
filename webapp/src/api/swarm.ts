@@ -94,6 +94,15 @@ export const VAR_SUGGESTIONS: Record<string, string[]> = {
   factor_type: ["ارزش", "مومنتوم", "کیفیت", "رشد"],
   fund_type: ["سهامی", "درآمد ثابت", "مختلط", "شاخصی"],
   sector: ["بانک", "انرژی", "نیمه‌هادی", "مصرفی"],
+  /* Pools below exist so EVERY variable gets chips + live "did you mean"
+     filtering while typing (previously only `target` had fuzzy). */
+  commodity: ["نفت", "طلا", "نقره", "مس", "گاز طبیعی"],
+  company: ["TSLA", "AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "NFLX", "AMD"],
+  review_period: ["هفتگی", "ماهانه", "فصلی", "سالانه"],
+  strategy_type: ["مومنتوم", "میانگین‌بازگشتی", "دنبال‌کننده روند", "آربیتراژ", "لانگ/شورت"],
+  event_type: ["گزارش مالی", "ادغام و تملیک", "افزایش سرمایه", "تقسیم سود", "عرضه اولیه"],
+  crisis: ["جنگ تجاری", "بسته شدن تنگه هرمز", "شوک نفتی", "بحران بانکی", "رکود جهانی"],
+  portfolio: ["ترکیب ارزش-رشد", "60/40 سهام و اوراق", "محافظه‌کار", "تهاجمی", "درآمد ثابت"],
 };
 
 const SYMBOL_ALIASES: Record<string, string> = {
@@ -123,6 +132,12 @@ export function resolveSymbol(text: string): string | null {
     if (t === k || (t.length >= 3 && k.includes(t))) return v;
   }
   return null;
+}
+
+/** Pool used for live "did you mean" filtering of ANY variable. */
+export function poolFor(varName: string, presetName: string): string[] {
+  if (varName === "target") return targetPool(presetName);
+  return VAR_SUGGESTIONS[varName] || [];
 }
 
 export function fuzzySuggest(text: string, pool: string[]): string[] {

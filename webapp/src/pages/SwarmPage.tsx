@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Check, ChevronLeft, Download, FileText, History, RefreshCw, Users, Zap } from "lucide-react";
 import {
   createSwarmRun, downloadSwarmPdf, getSwarmPresets, getSwarmRun, listSwarmRuns, TASK_ICON,
-  fuzzySuggest, resolveSymbol, suggestionsFor, varTitle,
+  fuzzySuggest, poolFor, resolveSymbol, suggestionsFor, varTitle,
   type SwarmPreset, type SwarmRunRow, type SwarmRunStatus, type SwarmVariable,
 } from "@/api/swarm";
 import { faNum } from "@/lib/utils";
@@ -169,10 +169,19 @@ function SwarmForm({ preset, onBack, onLaunched }: {
     () => (current ? suggestionsFor(current.name, preset.name) : []),
     [current, preset.name]
   );
+  /* Live "did you mean" for EVERY variable (bot parity: fuzzy on any field,
+     chips filter as you type). Target uses the crypto/multi pool. */
   const fuzzy = useMemo(
-    () => (current?.name === "target" ? fuzzySuggest(freeText, suggestionsFor("target", preset.name)) : []),
-    [current, freeText, preset.name]
+    () => (current ? fuzzySuggest(freeText, poolFor(current.name, preset.name)) : []),
+    [freeText, current, preset.name]
   );
+  const chips = useMemo(() => {
+    const t = freeText.trim().toLowerCase();
+    if (!t || !current) return suggestions;
+    const starts = suggestions.filter((s) => s.toLowerCase().startsWith(t));
+    const rest = suggestions.filter((s) => !s.toLowerCase().startsWith(t));
+    return [...starts, ...rest];
+  }, [freeText, suggestions, current]);
 
   useEffect(() => { setFreeText(values[current?.name || ""] || ""); }, [step]); // eslint-disable-line
 
@@ -251,10 +260,10 @@ function SwarmForm({ preset, onBack, onLaunched }: {
                 {varTitle(current.name, current.description, current.required).desc}
               </p>
 
-              {/* suggestion chips */}
-              {suggestions.length > 0 && (
+              {/* suggestion chips — reorder live as you type */}
+              {chips.length > 0 && (
                 <div className="mt-4 flex flex-wrap gap-2">
-                  {(crypto || current.name !== "target" ? suggestions : suggestions.slice(0, 9)).map((s) => (
+                  {(crypto || current.name !== "target" ? chips : chips.slice(0, 9)).map((s) => (
                     <button
                       key={s}
                       onClick={() => pick(s)}
@@ -266,19 +275,36 @@ function SwarmForm({ preset, onBack, onLaunched }: {
                 </div>
               )}
 
-              {/* fuzzy matches while typing a target */}
-              {current.name === "target" && fuzzy.length > 0 && (
+              {/* fuzzy "did you mean" — for EVERY variable, not just target.
+                  Shows pool matches not already visible as chips + the raw
+                  typed value (normalized), mirroring the bot's svarraw flow.
+                  Hidden when the typed text exactly matches a pool option. */}
+              {freeText.trim() && (() => {
+                const pool = poolFor(current.name, preset.name);
+                const exact = pool.some((s) => s.toLowerCase() === freeText.trim().toLowerCase());
+                const extra = fuzzy.filter((s) => !(crypto || current.name !== "target" ? chips : chips.slice(0, 9)).includes(s)).slice(0, 6);
+                if (exact && extra.length === 0) return null;
+                return (
                 <div className="mt-3 rounded-xl border border-brand/25 bg-brand/5 p-3">
-                  <div className="mb-2 text-[11.5px] font-semibold text-indigo-300">🔎 منظورت این بود؟</div>
+                  <div className="mb-2 text-[11.5px] font-semibold text-indigo-300">🔎 منظورت این بود؟ (نوشتی: «{freeText.trim()}»)</div>
                   <div className="flex flex-wrap gap-2">
-                    {fuzzy.map((s) => (
-                      <button key={s} onClick={() => pick(s)} className="rounded-lg bg-brand/15 px-3 py-1.5 text-[12px] font-bold text-indigo-200 active:scale-95">
-                        {s}
-                      </button>
-                    ))}
+                    {extra.map((s) => (
+                        <button key={s} onClick={() => pick(s)} className="rounded-lg bg-brand/15 px-3 py-1.5 text-[12px] font-bold text-indigo-200 active:scale-95">
+                          {s}
+                        </button>
+                      ))}
+                    {!exact && (
+                    <button
+                      onClick={submitFree}
+                      className="rounded-lg border border-brand/40 bg-transparent px-3 py-1.5 text-[12px] font-bold text-indigo-100 active:scale-95"
+                    >
+                      ✅ همین را می‌خواهم: {freeText.trim()}
+                    </button>
+                    )}
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* free text */}
               <div className="mt-4 flex gap-2">
