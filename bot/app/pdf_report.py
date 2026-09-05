@@ -176,11 +176,12 @@ class PDFReport(FPDF):
         self.ln(0.5)
 
     def kpi_cards(self, cards: list[tuple[str, str, Optional[tuple], Optional[tuple]]], per_row: int = 4):
-        """cards: (label, value, value_color, bg_color). Renders rounded KPI cards."""
+        """cards: (label, value, value_color, bg_color). RTL horizontal cards:
+        label on the RIGHT, value to its LEFT."""
         gap = 3.2
         total_w = self.w - 2 * MARGIN
         card_w = (total_w - gap * (per_row - 1)) / per_row
-        card_h = 17
+        card_h = 13
         y0 = self.get_y()
         for i, (label, value, vcol, bg) in enumerate(cards):
             row, col = divmod(i, per_row)
@@ -194,16 +195,17 @@ class PDFReport(FPDF):
             self.set_draw_color(*C_LINE)
             self.set_line_width(0.2)
             self.rect(x, y, card_w, card_h, style="DF", round_corners=True, corner_radius=2.4)
-            # value
-            self.set_xy(x + 2.5, y + 2.6)
-            self.set_font("Vazir", "B", 12.5)
-            self.set_text_color(*(vcol or C_PRIMARY))
-            self.cell(card_w - 5, 7, fa(str(value)), align="R")
-            # label
-            self.set_xy(x + 2.5, y + 10.3)
-            self.set_font("Vazir", "", 8)
+            mid = y + card_h / 2
+            # label — right zone, right-aligned
+            self.set_xy(x + card_w * 0.42, mid - 3.2)
+            self.set_font("Vazir", "", 8.5)
             self.set_text_color(*C_MUTED)
-            self.cell(card_w - 5, 5, fa(label), align="R")
+            self.cell(card_w * 0.55, 6.4, fa(label), align="R")
+            # value — left zone, centred in its own lane
+            self.set_xy(x + 2.5, mid - 3.2)
+            self.set_font("Vazir", "B", 11.5)
+            self.set_text_color(*(vcol or C_PRIMARY))
+            self.cell(card_w * 0.40, 6.4, fa(str(value)), align="C")
         rows = (len(cards) + per_row - 1) // per_row
         self.set_y(y0 + rows * (card_h + gap) + 2)
 
@@ -256,16 +258,19 @@ class PDFReport(FPDF):
         self.rect(MARGIN, y0, total_w, rows * row_h, style="DF", round_corners=True, corner_radius=1.8)
         for i, (k, v) in enumerate(lines):
             row, col = divmod(i, cols)
-            # RTL: col 0 renders at the right side
+            # RTL: col 0 renders at the right side; label RIGHT, value LEFT
             x = self.w - MARGIN - (col + 1) * cell_w
             y = y0 + row * row_h
+            # value lane at the left of the cell
             self.set_xy(x + 3, y + 1.5)
-            self.set_font("Vazir", "", 8)
-            self.set_text_color(*C_FAINT)
-            self.cell(cell_w * 0.30, 5.4, fa(k + ":"), align="R")
             self.set_font("Vazir", "B", 8.5)
             self.set_text_color(*C_PRIMARY)
-            self.cell(cell_w * 0.70 - 3, 5.4, fa(str(v))[:34], align="R")
+            self.cell(cell_w * 0.45, 5.4, fa(str(v))[:30], align="C")
+            # label to the right of the value
+            self.set_xy(x + 3 + cell_w * 0.45, y + 1.5)
+            self.set_font("Vazir", "", 8)
+            self.set_text_color(*C_FAINT)
+            self.cell(cell_w * 0.55 - 3, 5.4, fa(k + ":"), align="R")
         self.set_y(y0 + rows * row_h + 4)
 
     def body(self, text: str, size: float = 10):
@@ -290,23 +295,36 @@ class PDFReport(FPDF):
         if not trade_log:
             return
         show = trade_log[:max_rows]
-        # header
+        # RTL table — explicit right-anchored x positions:
+        # تاریخ | سمت | قیمت | بازده | سود/زیان | دلیل (right → left)
+        total_w = self.w - 2 * MARGIN
+        col_ws = [24, 13, 26, 18, 26, 0]  # date..reason; reason takes the rest
+        col_ws[-1] = total_w - sum(col_ws[:-1])
+        # x of each column's LEFT edge (fpdf draws from x leftward→rightward)
+        right_edge = self.w - MARGIN
+        col_x = {}
+        acc = right_edge
+        keys = ["date", "side", "price", "ret", "pnl", "reason"]
+        for w, k in zip(col_ws, keys):
+            col_x[k] = acc - w
+            acc -= w
+        order = ["date", "side", "price", "ret", "pnl", "reason"]  # visual right→left
         self.set_fill_color(*C_PRIMARY)
         self.set_text_color(255, 255, 255)
         self.set_font("Vazir", "B", 8.5)
         self.set_draw_color(*C_PRIMARY)
         self.set_line_width(0.2)
-        widths = [(24, "تاریخ"), (13, "سمت"), (26, "قیمت"), (18, "بازده"), (26, "سود/زیان"), (0, "دلیل")]
-        for w, name in widths:
-            self.cell(w if w else 0, 7.5, fa(name), border=1, fill=True, align="C",
-                      new_x="LMARGIN" if name == "دلیل" else "RIGHT", new_y="NEXT" if name == "دلیل" else "TOP")
-        self.ln(-0.2)
+        row_h = 7.5
+        y = self.get_y()
+        headers = {"date": "تاریخ", "side": "سمت", "price": "قیمت", "ret": "بازده", "pnl": "سود/زیان", "reason": "دلیل"}
+        for k in order:
+            self.set_xy(col_x[k], y)
+            self.cell(col_ws[keys.index(k)], row_h, fa(headers[k]), border=1, fill=True, align="C")
+        self.set_y(y + row_h)
         # rows
-        wins = sum(1 for t in show if float(t.get("return_pct", 0) or 0) > 0)
         for idx, t in enumerate(show):
             if self.get_y() > self.h - 24:
                 self.add_page()
-                self.set_x(self.l_margin)
             side = str(t.get("side", "?")).lower()
             try:
                 price = float(t.get("price", 0) or 0)
@@ -315,26 +333,25 @@ class PDFReport(FPDF):
             except (TypeError, ValueError):
                 continue
             fill = idx % 2 == 1
-            self.set_fill_color(*C_ZEBRA)
+            y = self.get_y()
             self.set_draw_color(*C_LINE)
-            self.set_text_color(*C_PRIMARY)
-            self.set_font("Vazir", "", 8)
-            self.cell(24, 6.6, fa(str(t.get("timestamp", ""))[:10]), border=1, fill=fill, align="C")
-            self.set_text_color(*(C_GREEN if side == "buy" else C_RED))
-            self.set_font("Vazir", "B", 8)
-            self.cell(13, 6.6, fa("خرید" if side == "buy" else "فروش"), border=1, fill=fill, align="C")
-            self.set_font("Vazir", "", 8)
-            self.set_text_color(*C_PRIMARY)
-            self.cell(26, 6.6, f"{price:,.0f}", border=1, fill=fill, align="C")
-            self.set_text_color(*(C_GREEN if ret >= 0 else C_RED))
-            self.set_font("Vazir", "B", 8)
-            self.cell(18, 6.6, f"{ret:+.1f}%", border=1, fill=fill, align="C")
-            self.set_text_color(*(C_GREEN if pnl >= 0 else C_RED))
-            self.cell(26, 6.6, f"{pnl:+,.0f}", border=1, fill=fill, align="C")
-            self.set_font("Vazir", "", 7.5)
-            self.set_text_color(*C_MUTED)
-            self.cell(0, 6.6, fa(str(t.get("reason", ""))[:14]), border=1, fill=fill, align="C",
-                      new_x="LMARGIN", new_y="NEXT")
+            values = {
+                "date": (str(t.get("timestamp", ""))[:10], C_PRIMARY, ""),
+                "side": ("خرید" if side == "buy" else "فروش", C_GREEN if side == "buy" else C_RED, "B"),
+                "price": (f"{price:,.0f}", C_PRIMARY, ""),
+                "ret": (f"{ret:+.1f}%", C_GREEN if ret >= 0 else C_RED, "B"),
+                "pnl": (f"{pnl:+,.0f}", C_GREEN if pnl >= 0 else C_RED, ""),
+                "reason": (str(t.get("reason", ""))[:16], C_MUTED, ""),
+            }
+            for k in order:
+                val, col, weight = values[k]
+                w = col_ws[keys.index(k)]
+                self.set_xy(col_x[k], y)
+                self.set_fill_color(*C_ZEBRA)
+                self.set_text_color(*col)
+                self.set_font("Vazir", weight, 8 if k != "reason" else 7.5)
+                self.cell(w, 6.6, fa(val), border=1, fill=fill, align="C")
+            self.set_y(y + 6.6)
         # footnote
         if len(trade_log) > max_rows:
             self.ln(1.5)
