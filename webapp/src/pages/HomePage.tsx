@@ -34,7 +34,7 @@ function Logo({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function Hero({ onCta }: { onCta: () => void }) {
+function Hero({ onCta, onReports }: { onCta: () => void; onReports: () => void }) {
   return (
     <section className="relative overflow-hidden rounded-2xl border border-line bg-gradient-to-b from-panel2/90 to-panel/60 px-5 py-10 text-center md:px-14 md:py-20">
       <div
@@ -64,7 +64,7 @@ function Hero({ onCta }: { onCta: () => void }) {
           <Button size="lg" className="w-full max-w-xs sm:w-auto" onClick={onCta}>
             <Bot size={17} /> شروع تحلیل با AI
           </Button>
-          <Button size="lg" variant="outline" className="w-full max-w-xs sm:w-auto" onClick={() => (location.href = "/app/legacy.html#reports")}>
+          <Button size="lg" variant="outline" className="w-full max-w-xs sm:w-auto" onClick={onReports}>
             <LineChart size={17} /> مشاهده گزارش‌ها
           </Button>
         </div>
@@ -124,7 +124,7 @@ function RunRowCard({ run, onOpen }: { run: RunRow; onOpen: () => void }) {
 
 /* ---------------------------------- page ---------------------------------- */
 
-export default function HomePage({ goChat }: { goChat: () => void }) {
+export default function HomePage({ goChat, goReports }: { goChat: () => void; goReports: () => void }) {
   const { runs, error } = useRuns();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -166,7 +166,7 @@ export default function HomePage({ goChat }: { goChat: () => void }) {
         </div>
       </header>
 
-      <Hero onCta={goChat} />
+      <Hero onCta={goChat} onReports={goReports} />
 
       {/* ---------- stats ---------- */}
       <div className="mt-6 grid grid-cols-2 gap-3 md:mt-8 md:grid-cols-4 md:gap-4">
@@ -196,9 +196,9 @@ export default function HomePage({ goChat }: { goChat: () => void }) {
         <h2 className="flex items-center gap-2 text-[15.5px] font-extrabold tracking-tight md:text-[17px]">
           <Activity size={17} className="text-brand" /> آخرین اجراها
         </h2>
-        <a href="/app/legacy.html#reports" className="text-[12.5px] font-semibold text-brand transition-opacity hover:opacity-80">
+        <button onClick={goReports} className="text-[12.5px] font-semibold text-brand transition-opacity hover:opacity-80">
           همه گزارش‌ها ←
-        </a>
+        </button>
       </div>
 
       <div className="mt-4">
@@ -218,7 +218,7 @@ export default function HomePage({ goChat }: { goChat: () => void }) {
         ) : (
           <div className="grid gap-3 md:grid-cols-2 md:gap-4 lg:grid-cols-3">
             {top.map((r) => (
-              <RunRowCard key={r.run_id} run={r} onOpen={() => (location.href = "/app/legacy.html#reports")} />
+              <RunRowCard key={r.run_id} run={r} onOpen={goReports} />
             ))}
           </div>
         )}

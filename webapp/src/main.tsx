@@ -5,13 +5,14 @@ import { FileBarChart, House, MessagesSquare, Users } from "lucide-react";
 import HomePage from "@/pages/HomePage";
 import SwarmPage from "@/pages/SwarmPage";
 import ChatPage from "@/pages/ChatPage";
+import ReportsPage from "@/pages/ReportsPage";
 import { auth } from "@/api/client";
 import "@/index.css";
 
 function App() {
   const [view, setView] = useState(() => {
     const h = location.hash;
-    return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : "home";
+    return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : "home";
   });
 
   useEffect(() => {
@@ -21,7 +22,7 @@ function App() {
   useEffect(() => {
     const onHash = () => {
       const h = location.hash;
-      setView(h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : "home");
+      setView(h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : "home");
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -29,8 +30,8 @@ function App() {
 
   const goSwarm = () => { location.hash = "#swarm"; setView("swarm"); };
   const goChat = () => { location.hash = "#chat"; setView("chat"); };
+  const goReports = () => { location.hash = "#reports"; setView("reports"); };
   const goHome = () => { if (location.hash) location.hash = ""; setView("home"); };
-  const goReports = () => (location.href = "/app/legacy.html#reports");
 
   return view === "swarm" ? (
     <>
@@ -44,9 +45,15 @@ function App() {
       <ChatPage />
       <BottomNav view="chat" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
+  ) : view === "reports" ? (
+    <>
+      <TopBar onHome={goHome} subtitle="گزارش‌های بک‌تست" />
+      <ReportsPage />
+      <BottomNav view="reports" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
+    </>
   ) : (
     <>
-      <HomePage goChat={goChat} />
+      <HomePage goChat={goChat} goReports={goReports} />
       <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
   );
