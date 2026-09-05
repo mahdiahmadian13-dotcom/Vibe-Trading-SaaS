@@ -940,3 +940,63 @@ async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSess
             "Cache-Control": "no-store",
         },
     )
+
+
+@app.get("/api/v1/vibe/runs/{run_id}/code")
+async def run_code(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Strategy source files for a run (ownership-checked) — same data as the main WebUI Code tab.
+
+    Returns {"files": {filename: source}, "pine": {exists, content}} mirroring the
+    engine's /runs/{id}/code + /runs/{id}/pine responses.
+    """
+    # Ownership check first (raises 403 for foreign runs)
+    await get_run_detail(run_id=run_id, user=user, db=db)
+    vibe = get_vibe()
+    files: dict = {}
+    try:
+        files = await vibe.request("GET", f"/runs/{run_id}/code") or {}
+    except Exception:
+        files = {}
+    pine: dict = {"exists": False, "content": None}
+    try:
+        pine = await vibe.request("GET", f"/runs/{run_id}/pine") or pine
+    except Exception:
+        pass
+    if isinstance(files, dict) and "files" in files:
+        files = files.get("files") or {}
+    return {"files": files if isinstance(files, dict) else {}, "pine": pine}
+
+
+@app.get("/api/v1/vibe/runs/{run_id}/code/download")
+async def run_code_download(
+    run_id: str,
+    file: str = Query("signal_engine.py"),
+    user: User = Depends(require_auth),  # noqa: B008
+    db: AsyncSession = Depends(get_db),  # noqa: B008
+):
+    """Download one strategy source file as .py (ownership-checked)."""
+    data = await run_code(run_id=run_id, user=user, db=db)
+    files = data.get("files") or {}
+    if file == "strategy.pine" or file.endswith(".pine"):
+        pine = data.get("pine") or {}
+        if not pine.get("exists"):
+            raise HTTPException(404, "فایل Pine برای این گزارش موجود نیست")
+        return Response(
+            content=pine.get("content") or "",
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="strategy_{run_id[:12]}.pine"',
+                "Cache-Control": "no-store",
+            },
+        )
+    if file not in files:
+        raise HTTPException(404, "فایل کد برای این گزارش موجود نیست")
+    safe = "".join(c for c in file if c.isalnum() or c in "._-") or "strategy.py"
+    return Response(
+        content=files[file],
+        media_type="text/x-python; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe}"',
+            "Cache-Control": "no-store",
+        },
+    )
