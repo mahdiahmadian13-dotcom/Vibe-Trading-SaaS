@@ -102,11 +102,14 @@ class PDFReport(FPDF):
         self.set_fill_color(*C_ACCENT)
         self.rect(0, 0, self.w, 2.2, style="F")
         self.set_y(7)
+        # two explicit halves — date left, title right — so they can never overlap
+        half = (self.w - 2 * MARGIN) / 2
         self.set_font("Vazir", "", 8)
+        self.set_x(MARGIN)
         self.set_text_color(*C_FAINT)
-        self.cell(0, 5, fa("گزارش بک‌تست — Vibe Trading"), align="R")
-        self.set_text_color(*C_MUTED)
-        self.cell(0, 5, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), align="L",
+        self.cell(half, 5, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), align="L")
+        self.set_x(MARGIN + half)
+        self.cell(half, 5, fa("گزارش بک‌تست — Vibe Trading"), align="R",
                   new_x="LMARGIN", new_y="NEXT")
         self.set_draw_color(*C_LINE)
         self.set_line_width(0.2)
@@ -121,8 +124,12 @@ class PDFReport(FPDF):
         self.set_y(-11)
         self.set_font("Vazir", "", 7.5)
         self.set_text_color(*C_FAINT)
-        self.cell(0, 6, fa("تولید شده توسط پلتفرم Vibe Trading"), align="R")
-        self.cell(0, 6, fa(f"صفحه {self.page_no()}"), align="L", new_x="LMARGIN", new_y="NEXT")
+        half = (self.w - 2 * MARGIN) / 2
+        self.set_x(MARGIN)
+        self.cell(half, 6, fa(f"صفحه {self.page_no()}"), align="L")
+        self.set_x(MARGIN + half)
+        self.cell(half, 6, fa("تولید شده توسط پلتفرم Vibe Trading"), align="R",
+                  new_x="LMARGIN", new_y="NEXT")
 
     # -- building blocks -----------------------------------------------------
     def cover_band(self, title: str, subtitle: str = "", status: str = "موفق"):
@@ -201,66 +208,65 @@ class PDFReport(FPDF):
         self.set_y(y0 + rows * (card_h + gap) + 2)
 
     def metric_table(self, rows: list[tuple[str, str, Optional[tuple]]]):
-        """Two-column key/value table with hairline rows."""
+        """Single-column key/value rows, full width: value zone (left) + label (right).
+
+        One metric per row — a value can never collide with a neighbour column.
+        """
         if not rows:
             return
-        row_h = 7.4
+        row_h = 8.0
         total_w = self.w - 2 * MARGIN
-        half = total_w / 2
-        # two-column flow
-        i = 0
-        while i < len(rows):
-            self._metric_cell(half, rows[i])
-            if i + 1 < len(rows):
-                self._metric_cell(half, rows[i + 1], left=True)
-            else:
-                self.set_x(self.l_margin + half)
-                self.set_draw_color(*C_LINE)
-                self.rect(self.l_margin + half, self.get_y(), half, row_h, style="D")
-                self.set_x(self.l_margin + 2 * half)
-            self.ln(row_h)
-            i += 2
+        vw = 52.0  # fixed value zone
+        for key, value, vcol in rows:
+            if self.get_y() + row_h > self.h - 18:
+                self.add_page()
+            y = self.get_y()
+            x = self.l_margin
+            self.set_draw_color(*C_LINE)
+            self.set_line_width(0.2)
+            self.set_fill_color(*C_ZEBRA)
+            self.rect(x, y, total_w, row_h, style="D")
+            # value — centred in its own fixed lane at the left
+            self.set_xy(x + 3, y + 1.3)
+            self.set_font("Vazir", "B", 10)
+            self.set_text_color(*(vcol or C_PRIMARY))
+            self.cell(vw, 5.4, fa(str(value)), align="C")
+            # label — right side, remaining width
+            self.set_xy(x + 3 + vw + 2, y + 1.3)
+            self.set_font("Vazir", "", 9.5)
+            self.set_text_color(*C_MUTED)
+            self.cell(total_w - vw - 5 - 2, 5.4, fa(key), align="R")
+            self.set_y(y + row_h)
 
     def _metric_cell(self, w: float, row: tuple[str, str, Optional[tuple]], left: bool = False):
-        key, value, vcol = row
-        row_h = 7.4
-        x = self.l_margin + (w if left else 0)
-        self.set_draw_color(*C_LINE)
-        self.set_line_width(0.2)
-        self.set_fill_color(*C_ZEBRA)
-        self.rect(x, self.get_y(), w, row_h, style="D")
-        self.set_xy(x + 2.5, self.get_y() + 1)
-        self.set_font("Vazir", "", 9)
-        self.set_text_color(*C_MUTED)
-        self.cell(w - 5, 5.4, fa(key), align="R")
-        self.set_font("Vazir", "B", 9.5)
-        self.set_text_color(*(vcol or C_PRIMARY))
-        self.cell(0, 5.4, fa(str(value)), align="L")
+        # Kept for backward compatibility; metric_table no longer uses it.
+        return
 
     def info_strip(self, lines: list[tuple[str, str]]):
-        """Compact one-line meta strip (assets, dates, run id)."""
+        """Fixed-grid meta strip — every item owns a fixed cell, no stacking, no overlap."""
+        cols = 2
         total_w = self.w - 2 * MARGIN
+        cell_w = total_w / cols
+        row_h = 8.2
+        rows = (len(lines) + cols - 1) // cols
+        y0 = self.get_y()
         self.set_fill_color(*C_LIGHT)
         self.set_draw_color(*C_LINE)
         self.set_line_width(0.2)
-        h = 9
-        y = self.get_y()
-        self.rect(MARGIN, y, total_w, h, style="DF", round_corners=True, corner_radius=1.8)
-        x = self.w - MARGIN - 4
-        self.set_y(y + 1.6)
-        for k, v in reversed(lines):  # RTL: first item at right
+        self.rect(MARGIN, y0, total_w, rows * row_h, style="DF", round_corners=True, corner_radius=1.8)
+        for i, (k, v) in enumerate(lines):
+            row, col = divmod(i, cols)
+            # RTL: col 0 renders at the right side
+            x = self.w - MARGIN - (col + 1) * cell_w
+            y = y0 + row * row_h
+            self.set_xy(x + 3, y + 1.5)
             self.set_font("Vazir", "", 8)
             self.set_text_color(*C_FAINT)
-            kw = self.get_string_width(fa(k + ": ")) + 2
-            self.set_x(x - kw)
-            self.cell(kw, 6, fa(k + ": "), align="R")
-            self.set_font("Vazir", "B", 8)
+            self.cell(cell_w * 0.30, 5.4, fa(k + ":"), align="R")
+            self.set_font("Vazir", "B", 8.5)
             self.set_text_color(*C_PRIMARY)
-            vw = max(self.get_string_width(fa(str(v))) + 3, 18)
-            self.set_x(x - kw - vw)
-            self.cell(vw, 6, fa(str(v)), align="R")
-            x = x - kw - vw - 6
-        self.set_y(y + h + 4)
+            self.cell(cell_w * 0.70 - 3, 5.4, fa(str(v))[:34], align="R")
+        self.set_y(y0 + rows * row_h + 4)
 
     def body(self, text: str, size: float = 10):
         self.set_font("Vazir", "", size)
@@ -418,15 +424,16 @@ def _charts_png(equity, metrics: dict, benchmark=None, trade_markers=None) -> Op
                 scale = values[0] / base if base else 1
                 bm_values = [v * scale for v in bm_values]
 
-        # style
+        # style — large fonts: the figure is ~10.5in wide but printed at
+        # ~7.2in page width, so everything must be oversized to stay legible
         plt.rcParams.update({
-            "font.size": 8.5, "axes.edgecolor": "#d8dce3", "axes.linewidth": 0.8,
-            "xtick.color": "#8a919e", "ytick.color": "#8a919e",
+            "font.size": 10.5, "axes.edgecolor": "#d8dce3", "axes.linewidth": 0.9,
+            "xtick.color": "#565d68", "ytick.color": "#565d68",
             "grid.color": "#e8ebf0", "grid.linewidth": 0.7,
         })
         fig, (ax1, ax2) = plt.subplots(
-            2, 1, figsize=(10.5, 6.2), sharex=True,
-            gridspec_kw={"height_ratios": [3, 1.15], "hspace": 0.09}, layout="constrained",
+            2, 1, figsize=(10.5, 7.6), sharex=True,
+            gridspec_kw={"height_ratios": [3, 1.3], "hspace": 0.10}, layout="constrained",
         )
         fig.patch.set_facecolor("#ffffff")
         for ax in (ax1, ax2):
@@ -436,24 +443,36 @@ def _charts_png(equity, metrics: dict, benchmark=None, trade_markers=None) -> Op
                 ax.spines[s].set_visible(False)
 
         start_val = values[0]
-        ax1.plot(dates, values, color="#4f46e5", linewidth=1.8, label="Strategy", solid_capstyle="round", zorder=3)
+        ax1.plot(dates, values, color="#4f46e5", linewidth=2.2, label="Strategy", solid_capstyle="round", zorder=3)
         ax1.fill_between(dates, values, start_val,
                          where=[v >= start_val for v in values], color="#4f46e5", alpha=0.07, interpolate=True)
         ax1.fill_between(dates, values, start_val,
                          where=[v < start_val for v in values], color="#c8262d", alpha=0.06, interpolate=True)
-        ax1.axhline(start_val, color="#b7bdc9", linewidth=0.8, linestyle=":", zorder=1)
+        ax1.axhline(start_val, color="#b7bdc9", linewidth=0.9, linestyle=":", zorder=1)
         if bm_values and len(bm_values) == len(bm_dates):
-            ax1.plot(bm_dates, bm_values, color="#0aa2a8", linewidth=1.3, alpha=0.9,
+            ax1.plot(bm_dates, bm_values, color="#0aa2a8", linewidth=1.6, alpha=0.9,
                      linestyle="--", label="Buy & Hold", zorder=2)
-        ax1.set_ylabel("Equity", color="#6a7280", fontsize=9)
+        ax1.set_ylabel("Equity", color="#565d68", fontsize=11, fontweight="bold")
         ax1.yaxis.set_major_formatter(lambda x, _: f"{x / 1000:,.0f}K" if abs(x) >= 1000 else f"{x:,.0f}")
+        ax1.tick_params(axis="both", labelsize=10)
+        # stats title — so the chart is interpretable on its own
+        _tr = metrics.get("total_return")
+        _br = metrics.get("benchmark_return")
+        _sh = metrics.get("sharpe")
+        _ttl = f"Return: {_tr:+.1%}" if _tr is not None else "Return: n/a"
+        if _br is not None:
+            _ttl += f"   |   B&H: {_br:+.1%}   |   Excess: {metrics.get('excess_return', 0):+.1%}"
+        if _sh is not None:
+            _ttl += f"   |   Sharpe: {_sh:.2f}"
+        ax1.set_title(_ttl, color="#1a1d24", fontsize=12, fontweight="bold", loc="left", pad=10)
 
         # trade markers on price axis
         if trade_markers:
             buys_x, buys_y, sells_x, sells_y = [], [], [], []
             for tmk in trade_markers:
                 side = str(tmk.get("side", "")).lower()
-                ts = str(tmk.get("timestamp", ""))[:10]
+                # engine markers use "time"; be tolerant of both keys
+                ts = str(tmk.get("timestamp") or tmk.get("time") or "")[:10]
                 try:
                     px = float(tmk.get("price"))
                     dx = _dt.strptime(ts, "%Y-%m-%d")
@@ -468,20 +487,20 @@ def _charts_png(equity, metrics: dict, benchmark=None, trade_markers=None) -> Op
                 px_lo, px_hi = (min(all_px), max(all_px)) if all_px else (0, 1)
                 span = (px_hi - px_lo) or 1
                 ax1b.set_ylim(px_lo - span * 0.25, px_hi + span * 0.25)
-                ax1b.tick_params(colors="#c2c7cf", labelsize=7)
+                ax1b.tick_params(colors="#8a919e", labelsize=9)
                 for s in ("top", "left"):
                     ax1b.spines[s].set_visible(False)
                 ax1b.spines["right"].set_color("#d8dce3")
-                ax1b.set_ylabel("Price", color="#aab0bb", fontsize=8)
+                ax1b.set_ylabel("Price", color="#8a919e", fontsize=10, fontweight="bold")
                 if buys_x:
-                    ax1b.scatter(buys_x, buys_y, marker="^", color="#0a8541", s=42, zorder=5,
-                                 edgecolors="white", linewidths=0.6, label="Buy")
+                    ax1b.scatter(buys_x, buys_y, marker="^", color="#0a8541", s=64, zorder=5,
+                                 edgecolors="white", linewidths=0.8, label="Buy")
                 if sells_x:
-                    ax1b.scatter(sells_x, sells_y, marker="v", color="#c8262d", s=42, zorder=5,
-                                 edgecolors="white", linewidths=0.6, label="Sell")
-                ax1b.legend(loc="upper left", fontsize=7.5, frameon=False)
+                    ax1b.scatter(sells_x, sells_y, marker="v", color="#c8262d", s=64, zorder=5,
+                                 edgecolors="white", linewidths=0.8, label="Sell")
+                ax1b.legend(loc="upper left", fontsize=9, frameon=True, facecolor="white", edgecolor="#d8dce3")
 
-        ax1.legend(loc="lower left", fontsize=8, frameon=False)
+        ax1.legend(loc="lower left", fontsize=9.5, frameon=True, facecolor="white", edgecolor="#d8dce3")
 
         # drawdown
         peak = values[0]
@@ -489,24 +508,26 @@ def _charts_png(equity, metrics: dict, benchmark=None, trade_markers=None) -> Op
         for v in values:
             peak = max(peak, v)
             dd.append((v - peak) / peak if peak else 0)
-        ax2.fill_between(dates, dd, 0, color="#c8262d", alpha=0.22, interpolate=True)
-        ax2.plot(dates, dd, color="#c8262d", linewidth=1.1)
-        ax2.set_ylabel("Drawdown", color="#6a7280", fontsize=9)
+        ax2.fill_between(dates, dd, 0, color="#c8262d", alpha=0.25, interpolate=True)
+        ax2.plot(dates, dd, color="#c8262d", linewidth=1.4)
+        ax2.set_ylabel("Drawdown", color="#565d68", fontsize=11, fontweight="bold")
+        ax2.tick_params(axis="both", labelsize=10)
         ax2.yaxis.set_major_formatter(lambda x, _: f"{x:.0%}")
         mdd = metrics.get("max_drawdown")
         if mdd is not None and dd:
-            ax2.annotate(f"MDD {mdd:.1%}", xy=(dates[dd.index(min(dd))], min(dd)),
-                         xytext=(8, -2), textcoords="offset points",
-                         color="#c8262d", fontsize=8, fontweight="bold")
+            ax2.annotate(f"Max DD {mdd:.1%}", xy=(dates[dd.index(min(dd))], min(dd)),
+                         xytext=(8, 10), textcoords="offset points",
+                         color="#ffffff", fontsize=10, fontweight="bold",
+                         bbox=dict(boxstyle="round,pad=0.3", fc="#c8262d", ec="none"))
         if isinstance(dates[0], _dt):
             ax2.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
             ax2.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
             for ax in (ax1, ax2):
-                ax.tick_params(axis="x", labelsize=8)
+                ax.tick_params(axis="x", labelsize=10)
 
         fd, path = tempfile.mkstemp(suffix=".png")
         os.close(fd)
-        fig.savefig(path, dpi=120, facecolor=fig.get_facecolor(), bbox_inches="tight")
+        fig.savefig(path, dpi=140, facecolor=fig.get_facecolor(), bbox_inches="tight")
         plt.close(fig)
         with open(path, "rb") as f:
             data = f.read()
@@ -561,14 +582,21 @@ def _monthly_heatmap_png(equity) -> Optional[bytes]:
             return None
 
         years = sorted({m[:4] for m in rets})
-        month_names = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
-                       "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"]
+        # NOTE: matplotlib's default font has no Arabic glyphs, so month
+        # labels must be Latin — Persian names would render as tofu boxes.
+        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         grid = np.full((12, len(years)), np.nan)
         for m, r in rets.items():
             yi = years.index(m[:4])
             grid[int(m[5:7]) - 1, yi] = r
 
-        fig, ax = plt.subplots(figsize=(10.5, 0.42 * 12 + 1.1))
+        # Skip near-empty grids (e.g. a 2-month backtest) — they look broken.
+        filled = int(np.count_nonzero(~np.isnan(grid)))
+        if filled < 3:
+            return None
+
+        fig, ax = plt.subplots(figsize=(10.5, 0.5 * 12 + 1.2), layout="constrained")
         fig.patch.set_facecolor("#ffffff")
         masked = np.ma.masked_invalid(grid)
         cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
@@ -576,9 +604,9 @@ def _monthly_heatmap_png(equity) -> Optional[bytes]:
         vmax = max(0.08, float(np.nanmax(np.abs(grid))) * 0.9)
         ax.imshow(masked, cmap=cmap, vmin=-vmax, vmax=vmax, aspect="auto")
         ax.set_xticks(range(len(years)))
-        ax.set_xticklabels(years, fontsize=9, color="#6a7280")
+        ax.set_xticklabels(years, fontsize=11, color="#565d68", fontweight="bold")
         ax.set_yticks(range(12))
-        ax.set_yticklabels(month_names, fontsize=8.5, color="#4a505c")
+        ax.set_yticklabels(month_names, fontsize=10.5, color="#3a3f4a")
         ax.tick_params(length=0)
         for s in ax.spines.values():
             s.set_visible(False)
@@ -587,17 +615,17 @@ def _monthly_heatmap_png(equity) -> Optional[bytes]:
                 val = grid[mi, yi]
                 if not np.isnan(val):
                     ax.text(yi, mi, f"{val:+.1%}", ha="center", va="center",
-                            fontsize=7.5, color="#ffffff" if abs(val) > vmax * 0.55 else "#333a46")
+                            fontsize=10, fontweight="bold",
+                            color="#ffffff" if abs(val) > vmax * 0.55 else "#333a46")
         # subtle cell borders
         ax.set_xticks(np.arange(-0.5, len(years), 1), minor=True)
         ax.set_yticks(np.arange(-0.5, 12, 1), minor=True)
-        ax.grid(which="minor", color="#ffffff", linewidth=1.6)
+        ax.grid(which="minor", color="#ffffff", linewidth=2)
         ax.tick_params(which="minor", length=0)
 
-        plt.tight_layout()
         fd, path = tempfile.mkstemp(suffix=".png")
         os.close(fd)
-        fig.savefig(path, dpi=120, facecolor=fig.get_facecolor(), bbox_inches="tight")
+        fig.savefig(path, dpi=140, facecolor=fig.get_facecolor(), bbox_inches="tight")
         plt.close(fig)
         with open(path, "rb") as f:
             data = f.read()
@@ -678,10 +706,10 @@ def build_backtest_pdf(detail: dict) -> bytes:
     rows = []
     if metrics.get("benchmark_return") is not None:
         br = metrics["benchmark_return"]
-        rows.append(("خرید و نگهداری (بنچمارک)", _fmt_pct(br), C_GREEN if br >= 0 else C_RED))
+        rows.append(("خرید و نگهداری", _fmt_pct(br), C_GREEN if br >= 0 else C_RED))
     if metrics.get("excess_return") is not None:
         ex = metrics["excess_return"]
-        rows.append(("بازده مازاد (آلفا)", _fmt_pct(ex), C_GREEN if ex >= 0 else C_RED))
+        rows.append(("بازده مازاد", _fmt_pct(ex), C_GREEN if ex >= 0 else C_RED))
     if metrics.get("information_ratio") is not None:
         rows.append(("نسبت اطلاعات", _fmt_num(metrics["information_ratio"]), None))
     if metrics.get("tracking_error") is not None:
@@ -715,9 +743,9 @@ def build_backtest_pdf(detail: dict) -> bytes:
     if metrics.get("total_turnover") is not None:
         act_rows.append(("گردش کل", f"{metrics['total_turnover']:,.1f}", None))
     if metrics.get("rebalance_count") is not None:
-        act_rows.append(("تعداد باز balancing", str(int(metrics["rebalance_count"])), None))
+        act_rows.append(("تعداد بازتوازن", str(int(metrics["rebalance_count"])), None))
     if metrics.get("avg_turnover") is not None:
-        act_rows.append(("میانگین گردش هر باز balancing", f"{metrics['avg_turnover']:,.3f}", None))
+        act_rows.append(("میانگین گردش هر بازتوازن", f"{metrics['avg_turnover']:,.3f}", None))
     pdf.metric_table(act_rows)
 
     # --- performance charts -----------------------------------------------------
