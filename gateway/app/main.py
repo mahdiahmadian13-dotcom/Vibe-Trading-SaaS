@@ -877,6 +877,6 @@ async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSess
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="backtest_{run_id}.pdf"',
-            "Cache-Control": "private, max-age=300",
+            "Cache-Control": "no-store",
         },
     )

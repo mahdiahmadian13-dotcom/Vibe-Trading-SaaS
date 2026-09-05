@@ -706,7 +706,8 @@ async function authDownload(url, filename) {
   if (btn) { btn.style.opacity = '.6'; btn.textContent = '⏳ در حال آماده‌سازی…'; }
   try {
     const t = localStorage.getItem('vt_token');
-    const r = await fetch(url, {headers: {'Authorization': 'Bearer ' + t}});
+    const bust = (url.includes('?') ? '&' : '?') + '_=' + Date.now();
+    const r = await fetch(url + bust, {headers: {'Authorization': 'Bearer ' + t}, cache: 'no-store'});
     if (!r.ok) throw new Error('خطای سرور: ' + r.status);
     const blob = await r.blob();
     const a = document.createElement('a');
