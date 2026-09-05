@@ -281,26 +281,28 @@ function SwarmForm({ preset, onBack, onLaunched }: {
                   Hidden when the typed text exactly matches a pool option. */}
               {freeText.trim() && (() => {
                 const pool = poolFor(current.name, preset.name);
-                const exact = pool.some((s) => s.toLowerCase() === freeText.trim().toLowerCase());
-                const extra = fuzzy.filter((s) => !(crypto || current.name !== "target" ? chips : chips.slice(0, 9)).includes(s)).slice(0, 6);
-                if (exact && extra.length === 0) return null;
+                const typed = freeText.trim();
+                const exact = pool.some((s) => s.toLowerCase() === typed.toLowerCase());
+                // Exact pool hit → chips already show it, no box needed.
+                if (exact) return null;
                 return (
                 <div className="mt-3 rounded-xl border border-brand/25 bg-brand/5 p-3">
-                  <div className="mb-2 text-[11.5px] font-semibold text-indigo-300">🔎 منظورت این بود؟ (نوشتی: «{freeText.trim()}»)</div>
+                  <div className="mb-2 text-[11.5px] font-semibold text-indigo-300">🔎 منظورت این بود؟ (نوشتی: «{typed}»)</div>
                   <div className="flex flex-wrap gap-2">
-                    {extra.map((s) => (
+                    {/* pool matches FIRST (even if also visible as chips —
+                        the box must always contain the actual suggestion),
+                        then the raw-value confirm like the bot's svarraw. */}
+                    {fuzzy.slice(0, 6).map((s) => (
                         <button key={s} onClick={() => pick(s)} className="rounded-lg bg-brand/15 px-3 py-1.5 text-[12px] font-bold text-indigo-200 active:scale-95">
                           {s}
                         </button>
                       ))}
-                    {!exact && (
                     <button
                       onClick={submitFree}
                       className="rounded-lg border border-brand/40 bg-transparent px-3 py-1.5 text-[12px] font-bold text-indigo-100 active:scale-95"
                     >
-                      ✅ همین را می‌خواهم: {freeText.trim()}
+                      ✅ همین را می‌خواهم: {typed}
                     </button>
-                    )}
                   </div>
                 </div>
                 );

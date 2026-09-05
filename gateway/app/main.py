@@ -822,6 +822,31 @@ async def session_history(
 
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
+    """Never cache HTML entry points (index.html, legacy.html).
+
+    The JS/CSS bundles are content-hashed by Vite, so they are safe to
+    cache — but a cached index.html pins the browser to an OLD bundle
+    forever (this exact stale-cache bug bit us twice: old PDF-era
+    legacy.html and the pre-fuzzy swarm bundle). HTML must always be
+    revalidated so clients pick up new bundle filenames immediately.
+    """
+
+    async def dispatch(self, request, call_next):  # type: ignore[no-untyped-def]
+        resp = await call_next(request)
+        path = request.url.path
+        if path.endswith(".html") or path in ("/app", "/app/"):
+            resp.headers["Cache-Control"] = "no-store"
+        elif path.startswith("/app/assets/"):
+            # Hashed Vite bundles: safe for long caching.
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
+app.add_middleware(NoCacheHTMLMiddleware)
 
 app.mount("/app", StaticFiles(directory="/app/app/static", html=True), name="webapp")
 
