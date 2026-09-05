@@ -291,74 +291,95 @@ class PDFReport(FPDF):
                 except Exception:
                     break
 
-    def trades_table(self, trade_log: list[dict], max_rows: int = 40):
+    def trades_table(self, trade_log: list[dict]):
+        """Full trades table — EVERY trade, detailed RTL columns, header repeats
+        on page breaks, grand-total row at the end.
+
+        Columns (right → left): تاریخ | دارایی | سمت | قیمت | حجم | بازده |
+        سود/زیان | نگهداری | دلیل
+        """
         if not trade_log:
             return
-        show = trade_log[:max_rows]
-        # RTL table — explicit right-anchored x positions:
-        # تاریخ | سمت | قیمت | بازده | سود/زیان | دلیل (right → left)
         total_w = self.w - 2 * MARGIN
-        col_ws = [24, 13, 26, 18, 26, 0]  # date..reason; reason takes the rest
+        col_ws = [22, 20, 12, 24, 17, 15, 22, 15, 0]
         col_ws[-1] = total_w - sum(col_ws[:-1])
-        # x of each column's LEFT edge (fpdf draws from x leftward→rightward)
-        right_edge = self.w - MARGIN
+        keys = ["date", "code", "side", "price", "qty", "ret", "pnl", "hold", "reason"]
+        w_of = dict(zip(keys, col_ws))
         col_x = {}
-        acc = right_edge
-        keys = ["date", "side", "price", "ret", "pnl", "reason"]
-        for w, k in zip(col_ws, keys):
-            col_x[k] = acc - w
-            acc -= w
-        order = ["date", "side", "price", "ret", "pnl", "reason"]  # visual right→left
-        self.set_fill_color(*C_PRIMARY)
-        self.set_text_color(255, 255, 255)
-        self.set_font("Vazir", "B", 8.5)
-        self.set_draw_color(*C_PRIMARY)
-        self.set_line_width(0.2)
-        row_h = 7.5
-        y = self.get_y()
-        headers = {"date": "تاریخ", "side": "سمت", "price": "قیمت", "ret": "بازده", "pnl": "سود/زیان", "reason": "دلیل"}
-        for k in order:
-            self.set_xy(col_x[k], y)
-            self.cell(col_ws[keys.index(k)], row_h, fa(headers[k]), border=1, fill=True, align="C")
-        self.set_y(y + row_h)
-        # rows
-        for idx, t in enumerate(show):
-            if self.get_y() > self.h - 24:
+        acc = self.w - MARGIN
+        for k in keys:  # keys are ordered right → left
+            col_x[k] = acc - w_of[k]
+            acc -= w_of[k]
+        headers = {"date": "تاریخ", "code": "دارایی", "side": "سمت", "price": "قیمت",
+                   "qty": "حجم", "ret": "بازده", "pnl": "سود/زیان", "hold": "نگهداری",
+                   "reason": "دلیل"}
+        row_h = 7.2
+        data_h = 6.4
+
+        def _header():
+            y = self.get_y()
+            self.set_fill_color(*C_PRIMARY)
+            self.set_text_color(255, 255, 255)
+            self.set_font("Vazir", "B", 7.5)
+            self.set_draw_color(*C_PRIMARY)
+            for k in keys:
+                self.set_xy(col_x[k], y)
+                self.cell(w_of[k], row_h, fa(headers[k]), border=1, fill=True, align="C")
+            self.set_y(y + row_h)
+
+        _header()
+        for idx, t in enumerate(trade_log):
+            if self.get_y() > self.h - 26:
                 self.add_page()
+                _header()
             side = str(t.get("side", "?")).lower()
             try:
                 price = float(t.get("price", 0) or 0)
                 ret = float(t.get("return_pct", 0) or 0)
                 pnl = float(t.get("pnl", 0) or 0)
+                qty = float(t.get("qty", 0) or 0)
+                hold = float(t.get("holding_days", 0) or 0)
             except (TypeError, ValueError):
                 continue
             fill = idx % 2 == 1
             y = self.get_y()
-            self.set_draw_color(*C_LINE)
+            code = str(t.get("code") or t.get("symbol") or "—")
             values = {
                 "date": (str(t.get("timestamp", ""))[:10], C_PRIMARY, ""),
+                "code": (code[:10], C_PRIMARY, ""),
                 "side": ("خرید" if side == "buy" else "فروش", C_GREEN if side == "buy" else C_RED, "B"),
                 "price": (f"{price:,.0f}", C_PRIMARY, ""),
+                "qty": (f"{qty:,.6g}", C_MUTED, ""),
                 "ret": (f"{ret:+.1f}%", C_GREEN if ret >= 0 else C_RED, "B"),
                 "pnl": (f"{pnl:+,.0f}", C_GREEN if pnl >= 0 else C_RED, ""),
-                "reason": (str(t.get("reason", ""))[:16], C_MUTED, ""),
+                "hold": (f"{hold:.0f} روز" if hold else "—", C_MUTED, ""),
+                "reason": (str(t.get("reason", ""))[:18], C_MUTED, ""),
             }
-            for k in order:
+            self.set_draw_color(*C_LINE)
+            self.set_line_width(0.2)
+            for k in keys:
                 val, col, weight = values[k]
-                w = col_ws[keys.index(k)]
                 self.set_xy(col_x[k], y)
                 self.set_fill_color(*C_ZEBRA)
                 self.set_text_color(*col)
-                self.set_font("Vazir", weight, 8 if k != "reason" else 7.5)
-                self.cell(w, 6.6, fa(val), border=1, fill=fill, align="C")
-            self.set_y(y + 6.6)
-        # footnote
-        if len(trade_log) > max_rows:
-            self.ln(1.5)
-            self.set_font("Vazir", "", 7.5)
-            self.set_text_color(*C_FAINT)
-            self.cell(0, 5, fa(f"نمایش {len(show)} از {len(trade_log)} معامله"), align="C",
-                      new_x="LMARGIN", new_y="NEXT")
+                self.set_font("Vazir", weight, 7.5)
+                self.cell(w_of[k], data_h, fa(val), border=1, fill=fill, align="C")
+            self.set_y(y + data_h)
+        # grand-total row
+        total_pnl = sum(float(t.get("pnl", 0) or 0) for t in trade_log)
+        y = self.get_y()
+        pnl_w = w_of["pnl"]
+        self.set_fill_color(*C_LIGHT)
+        self.set_draw_color(*C_PRIMARY)
+        self.set_line_width(0.3)
+        self.set_font("Vazir", "B", 8)
+        self.set_text_color(*C_PRIMARY)
+        self.set_xy(col_x["reason"], y)  # leftmost — merged label covers all but pnl
+        self.cell(total_w - pnl_w, row_h, fa("جمع کل سود/زیان"), border=1, fill=True, align="C")
+        self.set_xy(col_x["pnl"], y)
+        self.set_text_color(*(C_GREEN if total_pnl >= 0 else C_RED))
+        self.cell(pnl_w, row_h, f"{total_pnl:+,.0f}", border=1, fill=True, align="C")
+        self.set_y(y + row_h)
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +819,7 @@ def build_backtest_pdf(detail: dict) -> bytes:
         pdf.info_strip([
             ("سودده", str(wins)),
             ("زیان‌ده", str(losses)),
+            ("همه معاملات", str(len(trade_log))),
         ])
         pdf.trades_table(trade_log)
 
