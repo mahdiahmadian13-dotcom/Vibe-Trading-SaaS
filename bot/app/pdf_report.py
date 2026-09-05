@@ -301,7 +301,7 @@ class PDFReport(FPDF):
         if not trade_log:
             return
         total_w = self.w - 2 * MARGIN
-        col_ws = [22, 20, 12, 24, 17, 15, 22, 15, 0]
+        col_ws = [48, 20, 12, 22, 15, 14, 21, 14, 0]
         col_ws[-1] = total_w - sum(col_ws[:-1])
         keys = ["date", "code", "side", "price", "qty", "ret", "pnl", "hold", "reason"]
         w_of = dict(zip(keys, col_ws))
@@ -328,10 +328,31 @@ class PDFReport(FPDF):
             self.set_y(y + row_h)
 
         _header()
-        for idx, t in enumerate(trade_log):
+        # Engine writes TWO rows per round trip: an entry row (pnl=0,
+        # holding=0) then the exit row carrying realized pnl + holding_days.
+        # Merge them: one table row per round trip, entry date shown as
+        # ورود under the exit's data. Break-even exits (pnl==0) are kept
+        # standalone with a "—" holding cell.
+        rows = []
+        pending_entry = None
+        for t in trade_log:
+            try:
+                pnl_f = float(t.get("pnl", 0) or 0)
+            except (TypeError, ValueError):
+                pnl_f = 0.0
+            if pnl_f == 0.0 and pending_entry is None:
+                pending_entry = t  # entry row — wait for its exit
+                continue
+            rows.append({"entry": pending_entry, "exit": t})
+            pending_entry = None
+        if pending_entry is not None:
+            rows.append({"entry": pending_entry, "exit": None})  # still open
+
+        for idx, pair in enumerate(rows):
             if self.get_y() > self.h - 26:
                 self.add_page()
                 _header()
+            t = pair["exit"] or pair["entry"]
             side = str(t.get("side", "?")).lower()
             try:
                 price = float(t.get("price", 0) or 0)
@@ -344,10 +365,15 @@ class PDFReport(FPDF):
             fill = idx % 2 == 1
             y = self.get_y()
             code = str(t.get("code") or t.get("symbol") or "—")
+            entry_date = str((pair["entry"] or {}).get("timestamp", ""))[:10]
+            date_txt = str(t.get("timestamp", ""))[:10]
+            if entry_date and pair["exit"] is not None:
+                date_txt = f"{entry_date} تا {date_txt}"
             values = {
-                "date": (str(t.get("timestamp", ""))[:10], C_PRIMARY, ""),
+                "date": (date_txt, C_PRIMARY, ""),
                 "code": (code[:10], C_PRIMARY, ""),
-                "side": ("خرید" if side == "buy" else "فروش", C_GREEN if side == "buy" else C_RED, "B"),
+                "side": ("خرید→فروش" if pair["entry"] else ("خرید" if side == "buy" else "فروش"),
+                         C_GREEN if side == "buy" else C_RED, "B"),
                 "price": (f"{price:,.0f}", C_PRIMARY, ""),
                 "qty": (f"{qty:,.6g}", C_MUTED, ""),
                 "ret": (f"{ret:+.1f}%", C_GREEN if ret >= 0 else C_RED, "B"),
@@ -367,18 +393,27 @@ class PDFReport(FPDF):
             self.set_y(y + data_h)
         # grand-total row
         total_pnl = sum(float(t.get("pnl", 0) or 0) for t in trade_log)
+        # keep the total row together with the table — break page first if tight
+        if self.get_y() + row_h > self.h - 26:
+            self.add_page()
+            _header()
         y = self.get_y()
         pnl_w = w_of["pnl"]
+        ret_w = w_of["ret"]
         self.set_fill_color(*C_LIGHT)
         self.set_draw_color(*C_PRIMARY)
         self.set_line_width(0.3)
         self.set_font("Vazir", "B", 8)
         self.set_text_color(*C_PRIMARY)
-        self.set_xy(col_x["reason"], y)  # leftmost — merged label covers all but pnl
-        self.cell(total_w - pnl_w, row_h, fa("جمع کل سود/زیان"), border=1, fill=True, align="C")
-        self.set_xy(col_x["pnl"], y)
+        # merged label from reason (leftmost) through ret's right edge
+        label_w = col_x["ret"] + ret_w - col_x["reason"]
+        self.set_xy(col_x["reason"], y)
+        self.cell(label_w, row_h, fa("جمع کل سود/زیان"), border=1, fill=True, align="C")
+        # ret cell of the total row shows the PnL value with breathing room:
+        # span ret+pnl columns so -187,769 never clips
+        self.set_xy(col_x["ret"], y)
         self.set_text_color(*(C_GREEN if total_pnl >= 0 else C_RED))
-        self.cell(pnl_w, row_h, f"{total_pnl:+,.0f}", border=1, fill=True, align="C")
+        self.cell(ret_w + pnl_w, row_h, f"{total_pnl:+,.0f}", border=1, fill=True, align="C")
         self.set_y(y + row_h)
 
 
