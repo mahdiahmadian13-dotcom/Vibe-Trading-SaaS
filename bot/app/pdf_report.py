@@ -369,11 +369,17 @@ class PDFReport(FPDF):
             date_txt = str(t.get("timestamp", ""))[:10]
             if entry_date and pair["exit"] is not None:
                 date_txt = f"{entry_date} تا {date_txt}"
+            # side label = the pair's entry side (trade direction):
+            # a round trip opened with sell is a short (فروش), with buy a long (خرید)
+            if pair["exit"] is not None and pair["entry"] is not None:
+                entry_side = str(pair["entry"].get("side", "?")).lower()
+                side_txt = "فروش" if entry_side == "sell" else "خرید"
+            else:
+                side_txt = "فروش" if side == "sell" else "خرید"
             values = {
                 "date": (date_txt, C_PRIMARY, ""),
                 "code": (code[:10], C_PRIMARY, ""),
-                "side": ("خرید→فروش" if pair["entry"] else ("خرید" if side == "buy" else "فروش"),
-                         C_GREEN if side == "buy" else C_RED, "B"),
+                "side": (side_txt, C_GREEN if side == "buy" else C_RED, "B"),
                 "price": (f"{price:,.0f}", C_PRIMARY, ""),
                 "qty": (f"{qty:,.6g}", C_MUTED, ""),
                 "ret": (f"{ret:+.1f}%", C_GREEN if ret >= 0 else C_RED, "B"),
