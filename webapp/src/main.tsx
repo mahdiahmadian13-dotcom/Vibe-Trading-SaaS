@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { createRoot } from "react-dom/client";
-import { House, MessagesSquare, Users } from "lucide-react";
+import { FileBarChart, House, MessagesSquare, Users } from "lucide-react";
 import HomePage from "@/pages/HomePage";
 import SwarmPage from "@/pages/SwarmPage";
 import ChatPage from "@/pages/ChatPage";
@@ -30,23 +30,24 @@ function App() {
   const goSwarm = () => { location.hash = "#swarm"; setView("swarm"); };
   const goChat = () => { location.hash = "#chat"; setView("chat"); };
   const goHome = () => { if (location.hash) location.hash = ""; setView("home"); };
+  const goReports = () => (location.href = "/app/legacy.html#reports");
 
   return view === "swarm" ? (
     <>
       <TopBar onHome={goHome} subtitle="تیم‌های هوش مصنوعی" />
       <SwarmPage />
-      <BottomNav view="swarm" onHome={goHome} onSwarm={goSwarm} onChat={goChat} />
+      <BottomNav view="swarm" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
   ) : view === "chat" ? (
     <>
       <TopBar onHome={goHome} subtitle="چت با تحلیلگر" />
       <ChatPage />
-      <BottomNav view="chat" onHome={goHome} onSwarm={goSwarm} onChat={goChat} />
+      <BottomNav view="chat" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
   ) : (
     <>
       <HomePage goChat={goChat} />
-      <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} onChat={goChat} />
+      <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
   );
 }
@@ -76,12 +77,13 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: typeof House; live?: b
   { id: "home", label: "خانه", icon: House },
   { id: "chat", label: "چت", icon: MessagesSquare, live: true },
   { id: "swarm", label: "تیم‌ها", icon: Users },
+  { id: "reports", label: "گزارش‌ها", icon: FileBarChart },
 ];
 
-function BottomNav({ view, onHome, onSwarm, onChat }: {
-  view: string; onHome: () => void; onSwarm: () => void; onChat: () => void;
+function BottomNav({ view, onHome, onSwarm, onChat, goReports }: {
+  view: string; onHome: () => void; onSwarm: () => void; onChat: () => void; goReports: () => void;
 }) {
-  const handlers: Record<string, () => void> = { home: onHome, chat: onChat, swarm: onSwarm };
+  const handlers: Record<string, () => void> = { home: onHome, chat: onChat, swarm: onSwarm, reports: goReports };
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center pb-[max(env(safe-area-inset-bottom),0.6rem)] md:hidden">
