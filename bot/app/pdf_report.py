@@ -444,6 +444,142 @@ def _parse_equity(equity):
     return dates, values
 
 
+# ---------------------------------------------------------------------------
+# Tearsheet math — Python port of the WebUI's frontend/src/lib/tearsheet.ts
+# (running-peak drawdown episodes, calendar-month/annual returns).
+# ---------------------------------------------------------------------------
+def _parse_day(s):
+    """Parse 'YYYY-MM-DD[ HH:MM:SS]' -> datetime.date or None."""
+    try:
+        from datetime import datetime as _dt
+        txt = str(s or "").strip().replace("T", " ")
+        if len(txt) >= 19:
+            return _dt.strptime(txt[:19], "%Y-%m-%d %H:%M:%S").date()
+        if len(txt) >= 10:
+            return _dt.strptime(txt[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _norm_equity(equity):
+    """[(date, equity)] chronological, drops bad rows (mirrors normalizeEquitySeries)."""
+    pts = []
+    for p in equity or []:
+        if not isinstance(p, dict):
+            continue
+        try:
+            v = float(p.get("equity") if p.get("equity") is not None
+                      else p.get("value") if p.get("value") is not None
+                      else p.get("close"))
+        except (TypeError, ValueError):
+            continue
+        d = _parse_day(p.get("time") or p.get("date") or p.get("timestamp"))
+        if d is None:
+            continue
+        pts.append((d, v))
+    if len(pts) >= 2 and pts[0][0] > pts[-1][0]:
+        pts.sort(key=lambda t: t[0])
+    return pts
+
+
+def _monthly_returns(pts):
+    """[(year, month, ret|None)] — port of computeMonthlyReturns."""
+    if not pts:
+        return []
+    month_end = {}
+    base0 = pts[0][1]
+    for d, v in pts:
+        month_end[(d.year, d.month)] = v
+    keys = sorted(month_end)
+    out = []
+    for i, k in enumerate(keys):
+        prev = keys[i - 1] if i > 0 else None
+        base = month_end[prev] if prev and (k[0] * 12 + k[1]) - (prev[0] * 12 + prev[1]) == 1 else (base0 if i == 0 else None)
+        if base is None or base <= 0:
+            out.append((k[0], k[1], None))
+        else:
+            out.append((k[0], k[1], month_end[k] / base - 1))
+    return out
+
+
+def _annual_returns(pts):
+    """[(year, ret)] — port of computeAnnualReturns."""
+    if not pts:
+        return []
+    year_end = {}
+    base0 = pts[0][1]
+    for d, v in pts:
+        year_end[d.year] = v
+    years = sorted(year_end)
+    out = []
+    for i, y in enumerate(years):
+        base = year_end[years[i - 1]] if i > 0 and years[i - 1] == y - 1 else (base0 if i == 0 else None)
+        if base is None or base <= 0:
+            continue
+        out.append((y, year_end[y] / base - 1))
+    return out
+
+
+def _top_drawdowns(pts, n=5):
+    """Running-peak episodes, deepest first — port of computeTopDrawdowns."""
+    if len(pts) < 2 or n <= 0:
+        return []
+    eps = []
+    peak_v, peak_d = float("-inf"), None
+    in_ep = False
+    ep_peak, ep_peak_d, trough, trough_d = 0.0, None, 0.0, None
+
+    def _days(a, b):
+        return (b - a).days if a and b else None
+
+    for d, v in pts:
+        if v > peak_v:
+            peak_v, peak_d = v, d
+        if v < peak_v:
+            if not in_ep:
+                in_ep = True
+                ep_peak, ep_peak_d, trough, trough_d = peak_v, peak_d, v, d
+            elif v < trough:
+                trough, trough_d = v, d
+        elif in_ep and v >= ep_peak:
+            depth = trough / ep_peak - 1 if ep_peak > 0 else 0.0
+            eps.append({"peak": ep_peak_d, "trough": trough_d, "recovery": d,
+                        "depth": depth, "p2t": _days(ep_peak_d, trough_d),
+                        "t2r": _days(trough_d, d)})
+            in_ep = False
+    if in_ep:
+        depth = trough / ep_peak - 1 if ep_peak > 0 else 0.0
+        eps.append({"peak": ep_peak_d, "trough": trough_d, "recovery": None,
+                    "depth": depth, "p2t": _days(ep_peak_d, trough_d), "t2r": None})
+    eps.sort(key=lambda e: e["depth"])
+    return eps[:n]
+
+
+def _parse_positions(rows):
+    """{symbol: [(date, weight)]} + sorted date list — mirrors parsePositionsPanel."""
+    syms, dateset = {}, set()
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        ts = str(r.get("timestamp") or r.get("time") or r.get("date") or "")
+        d = _parse_day(ts)
+        if d is None:
+            continue
+        dateset.add(d)
+        for k, v in r.items():
+            kl = str(k).lower()
+            if kl in ("timestamp", "time", "date"):
+                continue
+            try:
+                w = float(v)
+            except (TypeError, ValueError):
+                continue
+            syms.setdefault(str(k), []).append((d, w))
+    dates = sorted(dateset)
+    return syms, dates
+
+
 def _charts_png(equity, metrics: dict, benchmark=None, trade_markers=None) -> Optional[bytes]:
     """Render (equity+benchmark+markers, drawdown) as one tall PNG."""
     try:
@@ -619,58 +755,32 @@ def _charts_png(equity, metrics: dict, benchmark=None, trade_markers=None) -> Op
 
 
 def _monthly_heatmap_png(equity) -> Optional[bytes]:
-    """Monthly returns heatmap (year x month) — the signature WebUI visual."""
+    """Monthly returns heatmap (year x month) — the signature WebUI visual.
+
+    Uses _monthly_returns (exact port of the WebUI's computeMonthlyReturns)
+    so the PDF grid matches the dashboard cell-for-cell.
+    """
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import numpy as np
-        from datetime import datetime as _dt
-        from collections import OrderedDict
 
-        # group equity by month
-        monthly = OrderedDict()
-        last_val_by_month = OrderedDict()
-        prev_end = None
-        for p in equity or []:
-            if not isinstance(p, dict):
-                continue
-            v = p.get("equity") or p.get("value") or p.get("close")
-            d = str(p.get("time") or p.get("date") or p.get("timestamp", ""))[:7]  # YYYY-MM
-            if v is None or len(d) != 7:
-                continue
-            try:
-                v = float(v)
-            except (TypeError, ValueError):
-                continue
-            monthly.setdefault(d, [])
-            monthly[d].append(v)
-        if len(monthly) < 2:
+        monthly = _monthly_returns(_norm_equity(equity))
+        rets = {(y, m): r for y, m, r in monthly if r is not None}
+        if len(rets) < 3:
             return None
 
-        rets = {}
-        prev_last = None
-        for month, vals in monthly.items():
-            last = vals[-1]
-            first = vals[0]
-            base = prev_last if prev_last is not None else first
-            if base:
-                rets[month] = (last - base) / base
-            prev_last = last
-        if len(rets) < 2:
-            return None
-
-        years = sorted({m[:4] for m in rets})
+        years = sorted({y for y, _ in rets})
         # NOTE: matplotlib's default font has no Arabic glyphs, so month
         # labels must be Latin — Persian names would render as tofu boxes.
         month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         grid = np.full((12, len(years)), np.nan)
-        for m, r in rets.items():
-            yi = years.index(m[:4])
-            grid[int(m[5:7]) - 1, yi] = r
+        for (y, m), r in rets.items():
+            yi = years.index(y)
+            grid[m - 1, yi] = r
 
-        # Skip near-empty grids (e.g. a 2-month backtest) — they look broken.
         filled = int(np.count_nonzero(~np.isnan(grid)))
         if filled < 3:
             return None
@@ -716,6 +826,290 @@ def _monthly_heatmap_png(equity) -> Optional[bytes]:
         return None
 
 
+def _save_fig(fig) -> Optional[bytes]:
+    """Save a matplotlib figure to PNG bytes (shared helper)."""
+    try:
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        fig.savefig(path, dpi=140, facecolor=fig.get_facecolor(), bbox_inches="tight")
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+        with open(path, "rb") as f:
+            data = f.read()
+        os.unlink(path)
+        return data
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _mpl_base():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({
+        "font.size": 10.5, "axes.edgecolor": "#d8dce3", "axes.linewidth": 0.9,
+        "xtick.color": "#565d68", "ytick.color": "#565d68",
+        "grid.color": "#e8ebf0", "grid.linewidth": 0.7,
+    })
+    return plt
+
+
+def _equity_zones_png(pts, episodes) -> Optional[bytes]:
+    """Equity curve with the top drawdown episodes shaded (Tearsheet panel 1)."""
+    try:
+        plt = _mpl_base()
+        from datetime import datetime as _dt
+        if len(pts) < 2:
+            return None
+        step = max(1, len(pts) // 700)
+        sub = pts[::step]
+        dates = [_dt(d.year, d.month, d.day) for d, _ in sub]
+        values = [v for _, v in sub]
+        start_val = values[0]
+        fig, ax = plt.subplots(figsize=(10.5, 3.6), layout="constrained")
+        fig.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+        ax.grid(True, alpha=0.6)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        for i, ep in enumerate(episodes[:5]):
+            p, rec = ep["peak"], ep["recovery"] or sub[-1][0]
+            pd = _dt(p.year, p.month, p.day) if p else None
+            rd = _dt(rec.year, rec.month, rec.day) if rec else None
+            if pd and rd:
+                ax.axvspan(pd, rd, color="#c8262d", alpha=0.10 + 0.02 * (4 - i), zorder=1)
+        ax.plot(dates, values, color="#4f46e5", linewidth=2.2, zorder=3)
+        ax.axhline(start_val, color="#b7bdc9", linewidth=0.9, linestyle=":", zorder=1)
+        ax.set_ylabel("Equity", color="#565d68", fontsize=11, fontweight="bold")
+        ax.yaxis.set_major_formatter(lambda x, _: f"{x / 1000:,.0f}K" if abs(x) >= 1000 else f"{x:,.0f}")
+        ax.tick_params(axis="both", labelsize=10)
+        import matplotlib.dates as mdates
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
+        return _save_fig(fig)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _annual_bars_png(annual) -> Optional[bytes]:
+    """Annual returns bar chart (Tearsheet panel 3a)."""
+    try:
+        plt = _mpl_base()
+        if not annual:
+            return None
+        years = [str(y) for y, _ in annual]
+        rets = [r for _, r in annual]
+        colors = ["#0a8541" if r >= 0 else "#c8262d" for r in rets]
+        fig, ax = plt.subplots(figsize=(10.5, 2.8), layout="constrained")
+        fig.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+        ax.grid(True, axis="y", alpha=0.6)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        bars = ax.bar(years, [r * 100 for r in rets], color=colors, edgecolor="white", linewidth=1)
+        for b, r in zip(bars, rets):
+            ax.text(b.get_x() + b.get_width() / 2, b.get_height() + (0.4 if r >= 0 else -1.2),
+                    f"{r:+.1%}", ha="center", va="bottom" if r >= 0 else "top",
+                    fontsize=10, fontweight="bold", color="#333a46")
+        ax.axhline(0, color="#565d68", linewidth=0.9)
+        ax.set_ylabel("Return %", color="#565d68", fontsize=11, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=10)
+        return _save_fig(fig)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _positions_png(syms, dates) -> Optional[bytes]:
+    """Donut of latest weights + gross/net exposure evolution (Positions tab)."""
+    try:
+        plt = _mpl_base()
+        from datetime import datetime as _dt
+        # latest weight per symbol
+        latest = {}
+        for s, series in syms.items():
+            if series:
+                latest[s] = series[-1][1]
+        names = sorted(latest, key=lambda s: -abs(latest[s]))
+        top = names[:8]
+        vals = [abs(latest[s]) for s in top]
+        rest = sum(abs(latest[s]) for s in names[8:])
+        labels = list(top) + (["Other"] if rest > 1e-9 else [])
+        vals = vals + ([rest] if rest > 1e-9 else [])
+        if not vals or sum(vals) <= 0:
+            return None
+        palette = ["#4f46e5", "#0aa2a8", "#8b5cf6", "#14b8a6", "#0a8541", "#f97316",
+                   "#06b6d4", "#c8262d", "#84cc16"]
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10.5, 3.4), layout="constrained",
+                                       gridspec_kw={"width_ratios": [1, 1.6]})
+        fig.patch.set_facecolor("#ffffff")
+        for ax in (ax1, ax2):
+            ax.set_facecolor("#ffffff")
+        wedges, _ = ax1.pie(vals, colors=palette[:len(vals)], startangle=90,
+                            wedgeprops=dict(width=0.45, edgecolor="white", linewidth=2))
+        ax1.legend(wedges, [f"{l} {v / sum(vals):.0%}" for l, v in zip(labels, vals)],
+                   loc="center", fontsize=9, frameon=False)
+        ax1.set_title("Latest weights", fontsize=11, fontweight="bold", color="#1a1d24")
+        # exposure evolution (downsample to <=300 pts, forward-fill per symbol)
+        step = max(1, len(dates) // 300)
+        ds = dates[::step]
+        gross, net = [], []
+        for d in ds:
+            g = n = 0.0
+            for s, series in syms.items():
+                past = [w for dd, w in series if dd <= d]
+                w = past[-1] if past else 0.0
+                g += abs(w)
+                n += w
+            gross.append(g * 100)
+            net.append(n * 100)
+        xd = [_dt(d.year, d.month, d.day) for d in ds]
+        ax2.plot(xd, gross, color="#4f46e5", linewidth=1.8, label="Gross")
+        ax2.plot(xd, net, color="#0aa2a8", linewidth=1.8, label="Net")
+        ax2.grid(True, alpha=0.6)
+        for s in ("top", "right"):
+            ax2.spines[s].set_visible(False)
+        ax2.set_ylabel("Exposure %", color="#565d68", fontsize=11, fontweight="bold")
+        ax2.tick_params(axis="both", labelsize=9)
+        ax2.legend(fontsize=9, frameon=True, facecolor="white", edgecolor="#d8dce3")
+        ax2.set_title("Gross / Net exposure", fontsize=11, fontweight="bold", color="#1a1d24")
+        return _save_fig(fig)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _ic_line_png(ic_series) -> Optional[bytes]:
+    """Daily IC line with zero reference (Factor panel 1)."""
+    try:
+        plt = _mpl_base()
+        from datetime import datetime as _dt
+        pts = []
+        for row in ic_series or []:
+            try:
+                ic = float(row.get("ic"))
+            except (TypeError, ValueError):
+                continue
+            d = _parse_day(row.get("date"))
+            if d is None:
+                continue
+            pts.append((d, ic))
+        if len(pts) < 2:
+            return None
+        step = max(1, len(pts) // 500)
+        sub = pts[::step]
+        xd = [_dt(d.year, d.month, d.day) for d, _ in sub]
+        vals = [v for _, v in sub]
+        fig, ax = plt.subplots(figsize=(10.5, 3.0), layout="constrained")
+        fig.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+        ax.grid(True, alpha=0.6)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        ax.fill_between(xd, vals, 0, where=[v >= 0 for v in vals],
+                        color="#0a8541", alpha=0.15, interpolate=True)
+        ax.fill_between(xd, vals, 0, where=[v < 0 for v in vals],
+                        color="#c8262d", alpha=0.15, interpolate=True)
+        ax.plot(xd, vals, color="#4f46e5", linewidth=1.6)
+        ax.axhline(0, color="#565d68", linewidth=0.9)
+        ax.set_ylabel("IC", color="#565d68", fontsize=11, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=10)
+        return _save_fig(fig)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _group_equity_png(group_equity, n_groups) -> Optional[bytes]:
+    """Group equity curves (Factor panel 2)."""
+    try:
+        plt = _mpl_base()
+        from datetime import datetime as _dt
+        cols = [c for c in (group_equity[0].keys() if group_equity else []) if c != "date"]
+        if not cols:
+            return None
+        palette = ["#4f46e5", "#0aa2a8", "#8b5cf6", "#14b8a6", "#0a8541", "#f97316",
+                   "#06b6d4", "#c8262d", "#84cc16", "#ec4899"]
+        fig, ax = plt.subplots(figsize=(10.5, 3.2), layout="constrained")
+        fig.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+        ax.grid(True, alpha=0.6)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        step = max(1, len(group_equity) // 500)
+        for i, c in enumerate(cols[:max(1, n_groups or len(cols))]):
+            xd, yd = [], []
+            for row in group_equity[::step]:
+                d = _parse_day(row.get("date"))
+                try:
+                    v = float(row[c])
+                except (TypeError, ValueError):
+                    continue
+                if d is None:
+                    continue
+                xd.append(_dt(d.year, d.month, d.day))
+                yd.append(v)
+            if xd:
+                ax.plot(xd, yd, color=palette[i % len(palette)], linewidth=1.7, label=str(c))
+        ax.set_ylabel("Equity", color="#565d68", fontsize=11, fontweight="bold")
+        ax.tick_params(axis="both", labelsize=10)
+        ax.legend(fontsize=9, frameon=True, facecolor="white", edgecolor="#d8dce3", ncol=3)
+        return _save_fig(fig)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def _ic_corr_png(corr) -> Optional[bytes]:
+    """IC correlation heatmap (Factor panel 3)."""
+    try:
+        plt = _mpl_base()
+        import matplotlib
+        import numpy as np
+        labels = corr.get("labels") or []
+        mat = corr.get("matrix") or []
+        if len(labels) < 2 or not mat:
+            return None
+        arr = np.array(mat, dtype=float)
+        fig, ax = plt.subplots(figsize=(10.5, max(2.6, 0.7 * len(labels) + 1.2)),
+                               layout="constrained")
+        fig.patch.set_facecolor("#ffffff")
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
+            "bwr", ["#1d4ed8", "#93c5fd", "#f7f7f8", "#fca5a5", "#c8262d"])
+        ax.imshow(np.ma.masked_invalid(arr), cmap=cmap, vmin=-1, vmax=1, aspect="auto")
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, fontsize=9, color="#3a3f4a", rotation=30, ha="right")
+        ax.set_yticks(range(len(labels)))
+        ax.set_yticklabels(labels, fontsize=9, color="#3a3f4a")
+        ax.tick_params(length=0)
+        for s in ax.spines.values():
+            s.set_visible(False)
+        for yi in range(len(labels)):
+            for xi in range(len(labels)):
+                v = arr[yi, xi]
+                if not np.isnan(v):
+                    ax.text(xi, yi, f"{v:+.2f}", ha="center", va="center",
+                            fontsize=9, fontweight="bold",
+                            color="#ffffff" if abs(v) > 0.55 else "#333a46")
+        ax.set_xticks(np.arange(-0.5, len(labels), 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, len(labels), 1), minor=True)
+        ax.grid(which="minor", color="#ffffff", linewidth=2)
+        ax.tick_params(which="minor", length=0)
+        return _save_fig(fig)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 # ============================================================================
 # Public API
 # ============================================================================
@@ -726,9 +1120,11 @@ def build_backtest_pdf(detail: dict) -> bytes:
     rx = detail.get("risk_xray") or {}
     ctx = detail.get("run_context") or {}
     trade_log = detail.get("trade_log") or []
-    equity = detail.get("equity_curve") or []
+    equity = detail.get("artifacts_equity_csv") or detail.get("equity_curve") or []
     price_series = detail.get("price_series") or {}
     trade_markers = detail.get("trade_markers") or []
+    positions_csv = detail.get("artifacts_positions_csv") or []
+    factor = detail.get("factor_report") or {}
 
     tr = metrics.get("total_return")
     pdf = PDFReport()
@@ -843,6 +1239,13 @@ def build_backtest_pdf(detail: dict) -> bytes:
         x_w = pdf.w - pdf.l_margin - pdf.r_margin
         pdf.image(io.BytesIO(chart), x=pdf.l_margin, w=x_w)
 
+    # --- tearsheet data (computed once, shared by sections 6-8) -----------------
+    pts = _norm_equity(equity)
+    monthly = _monthly_returns(pts)
+    annual = _annual_returns(pts)
+    episodes = _top_drawdowns(pts, 5)
+
+    # --- 6. monthly heatmap (same calendar-month math as WebUI) --
     heat = _monthly_heatmap_png(equity)
     if heat:
         if pdf.get_y() > pdf.h - 120:
@@ -851,12 +1254,106 @@ def build_backtest_pdf(detail: dict) -> bytes:
         x_w = pdf.w - pdf.l_margin - pdf.r_margin
         pdf.image(io.BytesIO(heat), x=pdf.l_margin, w=x_w)
 
+    # --- 7. annual returns bars ---------------------------------------------------
+    if annual:
+        if pdf.get_y() > pdf.h - 90:
+            pdf.add_page()
+        pdf.section("بازده سالانه", "۷")
+        bars = _annual_bars_png(annual)
+        if bars:
+            x_w = pdf.w - pdf.l_margin - pdf.r_margin
+            pdf.image(io.BytesIO(bars), x=pdf.l_margin, w=x_w)
+        else:
+            pdf.metric_table([(str(y), f"{r:+.1%}",
+                               C_GREEN if r >= 0 else C_RED) for y, r in annual])
+
+    # --- 8. top-5 drawdowns --------------------------------------------------------
+    if episodes:
+        if pdf.get_y() > pdf.h - 90:
+            pdf.add_page()
+        pdf.section("۵ افت بزرگ سرمایه", "۸")
+        zones = _equity_zones_png(pts, episodes)
+        if zones:
+            x_w = pdf.w - pdf.l_margin - pdf.r_margin
+            pdf.image(io.BytesIO(zones), x=pdf.l_margin, w=x_w)
+        dd_rows = []
+        for i, ep in enumerate(episodes, 1):
+            pk = str(ep["peak"]) if ep["peak"] else "—"
+            tr_ = str(ep["trough"]) if ep["trough"] else "—"
+            rec = str(ep["recovery"]) if ep["recovery"] else "بازنگشته"
+            dd_rows.append(
+                (f"#{i} — عمق {ep['depth']:.1%} | قله {pk} | کف {tr_} | بازیابی {rec}",
+                 f"{ep['depth']:.1%}", C_RED))
+        pdf.metric_table(dd_rows)
+
+    # --- 9. positions (donut + gross/net exposure) ---------------------------------
+    syms, pos_dates = _parse_positions(positions_csv)
+    if syms and pos_dates:
+        if pdf.get_y() > pdf.h - 110:
+            pdf.add_page()
+        pdf.section("ترکیب پوزیشن‌ها و اکسپوژر", "۹")
+        pos_img = _positions_png(syms, pos_dates)
+        if pos_img:
+            x_w = pdf.w - pdf.l_margin - pdf.r_margin
+            pdf.image(io.BytesIO(pos_img), x=pdf.l_margin, w=x_w)
+        latest = {s: (series[-1][1] if series else 0.0) for s, series in syms.items()}
+        gross = sum(abs(w) for w in latest.values())
+        net = sum(latest.values())
+        pdf.metric_table([
+            ("اکسپوژر ناخالص (آخرین)", f"{gross:.1%}", None),
+            ("اکسپوژر خالص (آخرین)", f"{net:+.1%}",
+             C_GREEN if net >= 0 else C_RED),
+        ])
+        top_syms = sorted(latest, key=lambda s: -abs(latest[s]))[:8]
+        pdf.metric_table([
+            (f"وزن {s}", f"{latest[s]:+.1%}",
+             C_GREEN if latest[s] >= 0 else C_RED) for s in top_syms
+        ])
+
+    # --- 10. factor research ---------------------------------------------------------
+    factors = factor.get("factors") or [] if isinstance(factor, dict) else []
+    if factors:
+        pdf.add_page()
+        pdf.section("تحقیق فاکتور", "۱۰")
+        for f in factors:
+            name = str(f.get("name", "factor"))
+            stats = f.get("ic_stats") or {}
+            pdf.info_strip([
+                ("فاکتور", name),
+                ("تعداد گروه", str(f.get("n_groups", "—"))),
+                ("میانگین IC", _fmt_num(stats.get("ic_mean"))),
+                ("انحراف IC", _fmt_num(stats.get("ic_std"))),
+            ])
+            if f.get("ic_series"):
+                ic_img = _ic_line_png(f["ic_series"])
+                if ic_img:
+                    if pdf.get_y() > pdf.h - 80:
+                        pdf.add_page()
+                    x_w = pdf.w - pdf.l_margin - pdf.r_margin
+                    pdf.image(io.BytesIO(ic_img), x=pdf.l_margin, w=x_w)
+            if f.get("group_equity"):
+                ge_img = _group_equity_png(f["group_equity"], f.get("n_groups"))
+                if ge_img:
+                    if pdf.get_y() > pdf.h - 80:
+                        pdf.add_page()
+                    x_w = pdf.w - pdf.l_margin - pdf.r_margin
+                    pdf.image(io.BytesIO(ge_img), x=pdf.l_margin, w=x_w)
+        corr = factor.get("ic_correlation") if isinstance(factor, dict) else None
+        if corr and (corr.get("labels") or []):
+            if pdf.get_y() > pdf.h - 90:
+                pdf.add_page()
+            pdf.section("همبستگی IC فاکتورها", "")
+            corr_img = _ic_corr_png(corr)
+            if corr_img:
+                x_w = pdf.w - pdf.l_margin - pdf.r_margin
+                pdf.image(io.BytesIO(corr_img), x=pdf.l_margin, w=x_w)
+
     # --- trades -----------------------------------------------------------------
     if trade_log:
         pdf.add_page()
         wins = sum(1 for t in trade_log if float(t.get("return_pct", 0) or 0) > 0)
         losses = len(trade_log) - wins
-        pdf.section(f"معاملات ({len(trade_log)} مورد)", "۷")
+        pdf.section(f"معاملات ({len(trade_log)} مورد)", "۱۱")
         pdf.info_strip([
             ("سودده", str(wins)),
             ("زیان‌ده", str(losses)),

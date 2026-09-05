@@ -925,7 +925,15 @@ async def run_chart(run_id: str, user: User = Depends(require_auth), db: AsyncSe
 @app.get("/api/v1/vibe/runs/{run_id}/pdf")
 async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
     """Backtest report as PDF (ownership-checked) — reuses the bot's fpdf2 builder."""
-    detail = await get_run_detail(run_id=run_id, user=user, db=db)
+    # full=True: the tearsheet sections need artifacts_equity_csv + positions
+    detail = await get_run_detail(run_id=run_id, user=user, db=db, full=True)
+    # factor research is a separate engine endpoint — attach if the run has it
+    if detail.get("has_factor_artifacts"):
+        try:
+            vibe = get_vibe()
+            detail["factor_report"] = await vibe.request("GET", f"/runs/{run_id}/factor")
+        except Exception:
+            pass
     from app.pdf_report import build_backtest_pdf  # type: ignore
 
     try:
