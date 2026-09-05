@@ -265,12 +265,12 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
             )}
 
             {hasMetrics && (
-              <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                <Button className="flex-1" onClick={downloadPdf} disabled={pdfBusy}>
-                  <FileText size={15} /> {pdfBusy ? "در حال آماده‌سازی…" : "دانلود PDF"}
+              <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                <Button size="lg" className="flex-1" onClick={downloadPdf} disabled={pdfBusy}>
+                  <FileText size={18} /> {pdfBusy ? "در حال آماده‌سازی…" : "دانلود PDF"}
                 </Button>
-                <Button variant="outline" className="flex-1" onClick={loadCode}>
-                  <FileCode2 size={15} /> {codeOpen ? "بستن کد استراتژی" : "مشاهده کد استراتژی"}
+                <Button size="lg" variant="outline" className="flex-1" onClick={loadCode}>
+                  <FileCode2 size={18} /> {codeOpen ? "بستن کد استراتژی" : "مشاهده کد استراتژی"}
                 </Button>
               </div>
             )}
@@ -301,12 +301,12 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
                         <pre dir="ltr" className="max-h-[38dvh] overflow-auto rounded-xl border border-line bg-black/40 p-4 text-left font-mono text-[11.5px] leading-7 text-slate-200">
                           {activeSrc || "—"}
                         </pre>
-                        <div className="mt-2.5 flex gap-2">
-                          <Button size="sm" variant="outline" onClick={copyCode}>
-                            <Copy size={13} /> {copied ? "کپی شد ✅" : "کپی کد"}
+                        <div className="mt-3 flex flex-col gap-2.5 sm:flex-row">
+                          <Button variant="outline" className="flex-1" onClick={copyCode}>
+                            <Copy size={15} /> {copied ? "کپی شد ✅" : "کپی کد"}
                           </Button>
-                          <Button size="sm" variant="outline" onClick={downloadCode}>
-                            <Download size={13} /> دانلود {activeFile.endsWith(".pine") ? ".pine" : ".py"}
+                          <Button variant="outline" className="flex-1" onClick={downloadCode}>
+                            <Download size={15} /> دانلود {activeFile.endsWith(".pine") ? ".pine" : ".py"}
                           </Button>
                         </div>
                       </>
