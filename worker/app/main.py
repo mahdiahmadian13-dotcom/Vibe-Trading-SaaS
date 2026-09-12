@@ -153,7 +153,7 @@ async def task_backtest(ctx: dict, task_id: str, user_id: int, params: dict) -> 
         prompt = params.get("prompt", f"Run a backtest with these parameters: {json.dumps(params)}")
         await engine_request("POST", f"/sessions/{session_id}/messages", json={"content": prompt})
 
-        for i in range(300):
+        for i in range(900):  # LLM-driven backtests take several minutes
             await asyncio.sleep(1)
             if i % 15 == 0:
                 progress = {"status": "running", "phase": "backtest", "elapsed": i}
@@ -237,6 +237,26 @@ async def task_swarm(ctx: dict, task_id: str, user_id: int, params: dict) -> dic
 # ARQ Worker Settings
 # ============================================================================
 
+_heartbeat_task: asyncio.Task | None = None
+
+
+async def _heartbeat():
+    """Refresh workers:registry every 30s so the gateway knows we are alive."""
+    while True:
+        try:
+            r = await get_redis()
+            await r.hset("workers:registry", WORKER_NAME, json.dumps({
+                "name": WORKER_NAME,
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                "concurrency": WORKER_CONCURRENCY,
+                "status": "ready",
+                "engine": ENGINE_URL,
+            }))
+        except Exception as e:
+            print(f"[{WORKER_NAME}] heartbeat error: {e}")
+        await asyncio.sleep(30)
+
+
 async def startup(ctx):
     """Worker startup — register with broker and init DB."""
     r = await get_redis()
@@ -245,15 +265,21 @@ async def startup(ctx):
         "started_at": datetime.now(timezone.utc).isoformat(),
         "concurrency": WORKER_CONCURRENCY,
         "status": "ready",
+        "engine": ENGINE_URL,
     }))
     # Init DB connection for task updates
     if DATABASE_URL:
         await get_db_session()
-    print(f"[{WORKER_NAME}] Worker started, registered with broker")
+    global _heartbeat_task
+    _heartbeat_task = asyncio.create_task(_heartbeat())
+    print(f"[{WORKER_NAME}] Worker started, registered with broker (engine={ENGINE_URL})")
 
 
 async def shutdown(ctx):
     """Worker shutdown — deregister and cleanup."""
+    global _heartbeat_task
+    if _heartbeat_task:
+        _heartbeat_task.cancel()
     r = await get_redis()
     await r.hdel("workers:registry", WORKER_NAME)
     global _redis, _db_engine
@@ -278,4 +304,6 @@ class WorkerSettings:
     retry_delay = 10
     max_tries = 2
 
-    queue_name = "arq:default"
+    # NOTE: keep arq's default queue ("arq:queue") so gateway enqueue and
+    # worker consume from the SAME sorted set (mismatch caused silent stalls).
+

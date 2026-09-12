@@ -11,3 +11,4 @@ build/
 coverage.xml
 *.db
 *.sqlite3
+webapp/tsconfig.tsbuildinfo

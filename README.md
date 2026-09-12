@@ -8,7 +8,9 @@ Multi-tenant SaaS platform wrapping [Vibe-Trading](https://github.com/HKUDS/Vibe
 - 👥 **Multi-Tenant** — User management, subscriptions, rate limiting, anti-abuse
 - ⚡ **Parallel Workers** — Horizontal scaling, add servers with one command
 - 🔐 **JWT Auth** — Secure authentication with device fingerprinting
-- 💳 **Payment** — IDPay integration for Iranian market
+- 💳 **Payment** — IDPay integration: create → bank gateway → callback verify → auto-activate subscription
+- 🖥️ **Engine Fleet** — Multi-engine/multi-server: least-loaded routing, automatic health checks, failover
+- 🛠️ **Admin API** — Manage engines, workers, users, plans via REST (`/api/v1/admin/*`)
 - 📊 **Full API** — REST API for mobile apps, web, or third-party integrations
 
 ## 🏗️ Architecture
@@ -203,3 +205,52 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 - [Vibe-Trading](https://github.com/HKUDS/Vibe-Trading) — The AI trading engine
 - [HKUDS](https://github.com/HKUDS) — Hong Kong University Data Science Lab
+
+
+---
+
+## 🖥️ Multi-Server Fleet (v1.8)
+
+**Architecture:** Gateway → ARQ queue (Redis) → N Workers (any server) → Engine Fleet (any server)
+
+### Add an Engine (new AI-core server)
+```bash
+# 1. Run Vibe-Trading engine on the new server (port 8899)
+# 2. Register it in the gateway:
+curl -X POST http://GATEWAY:9001/api/v1/admin/fleet \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"engine-2","url":"http://NEW_SERVER:8899","max_concurrency":8}'
+# Health probe runs automatically (FLEET_HEALTH_INTERVAL=30s, failover after 2 failures)
+```
+
+### Add a Worker (new processing server)
+```bash
+# On the NEW server:
+git clone https://github.com/mahdiahmadian13-dotcom/Vibe-Trading-SaaS.git
+cd Vibe-Trading-SaaS
+BROKER_URL=redis://CENTRAL_IP:6379 \
+ENGINE_URL=http://CENTRAL_IP:8899 \
+ENGINE_API_KEY=$VIBE_ENGINE_API_KEY \
+DATABASE_URL=postgresql+asyncpg://vt:PASS@CENTRAL_IP:5432/vibetrader \
+WORKER_NAME=worker-eu-1 \
+docker compose -f docker-compose.worker.yml up -d --build
+# Heartbeat every 30s → appears in GET /api/v1/admin/workers
+```
+
+### Admin API
+| Endpoint | Purpose |
+|---|---|
+| `GET/POST/PUT/DELETE /api/v1/admin/fleet` | Engine nodes CRUD + live health |
+| `POST /api/v1/admin/fleet/{id}/health` | Force health probe |
+| `GET /api/v1/admin/workers` | Live worker registry (DB mirror of Redis) |
+| `POST /api/v1/admin/users/{id}/grant` | Grant/extend subscription manually |
+| `PUT /api/v1/admin/users/{id}/toggle` | Enable/disable user |
+
+### Payments (IDPay)
+1. `POST /api/v1/payments/create` → returns bank link (user pays in Toman)
+2. IDPay redirects back → `GET /api/v1/payments/callback` verifies server-side
+3. On `status=100` the subscription is auto-extended (Payment + Subscription rows)
+4. Bot: «اشتراک من» → 💳 خرید → payment link button
+
+Env: `IDPAY_API_KEY`, `PUBLIC_BASE_URL` (or `PAYMENT_CALLBACK_URL`) in `.env`.

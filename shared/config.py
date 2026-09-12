@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_ALLOWED_USERS: str = ""  # comma-separated user IDs
 
+    # --- Fleet (multi-server) ---
+    FLEET_HEALTH_INTERVAL: int = 30
+    FLEET_HEALTH_FAILS: int = 2
+
     # --- Worker ---
     WORKER_CONCURRENCY: int = 4
     WORKER_MAX_TASKS: int = 100
@@ -71,6 +75,8 @@ class Settings(BaseSettings):
     # --- Payment ---
     IDPAY_API_KEY: str = ""
     IDPAY_MERCHANT_ID: str = ""
+    PUBLIC_BASE_URL: str = ""          # e.g. https://api.example.com (payment callback)
+    PAYMENT_CALLBACK_URL: str = ""     # full override of callback URL (optional)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

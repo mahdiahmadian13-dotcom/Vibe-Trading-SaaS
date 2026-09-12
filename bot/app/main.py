@@ -2011,6 +2011,22 @@ async def cb_pdf_run(callback: CallbackQuery):
     await callback.answer()
 
 
+PLAN_FA = {"basic": "پایه", "pro": "حرفه‌ای", "enterprise": "سازمانی"}
+
+
+def _buy_kb(plans: list) -> InlineKeyboardMarkup:
+    rows = []
+    for pl in plans:
+        if pl["tier"] == "free":
+            continue
+        rows.append([InlineKeyboardButton(
+            text=f"خرید {PLAN_FA.get(pl['tier'], pl['tier'])} — {pl['price']:,} تومان",
+            callback_data=f"buy:{pl['tier']}",
+        )])
+    rows.append([InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.callback_query(F.data == "subscription")
 async def cb_subscription(callback: CallbackQuery):
     token = await get_user_token(callback.from_user.id)
@@ -2023,17 +2039,72 @@ async def cb_subscription(callback: CallbackQuery):
     plan = result.get("plan", "free")
     limits = result.get("limits", {})
 
+    # Fetch purchasable plans (prices from gateway — single source of truth)
+    plans_raw = await gateway.request("GET", "/api/v1/payments/plans", token=token)
+    plans = plans_raw if isinstance(plans_raw, list) else []
+
     text = (
         f"👤 **اشتراک شما:**\n\n"
-        f"📊 پلن: **{plan}**\n"
+        f"📊 پلن: **{PLAN_FA.get(plan, plan)}**\n"
         f"💬 جلسات روزانه: {limits.get('sessions_per_day', '?')}\n"
         f"📨 پیام‌ها: {limits.get('messages_per_day', '?')}\n"
         f"📊 بک‌تست: {limits.get('backtests_per_day', '?')}\n"
         f"🤖 Swarm: {limits.get('swarm_per_day', '?')}\n"
     )
+    if plans:
+        text += "\n💎 **ارتقای اشتراک:**\n"
+        for pl in plans:
+            if pl["tier"] == "free":
+                continue
+            text += f"• {PLAN_FA.get(pl['tier'], pl['tier'])}: {pl['price']:,} تومان / {pl['days']} روز\n"
 
-    await callback.message.edit_text(text, reply_markup=back_to_menu_kb(), parse_mode="Markdown")
+    kb_rows = []
+    for pl in plans:
+        if pl["tier"] == "free":
+            continue
+        kb_rows.append([InlineKeyboardButton(
+            text=f"💳 خرید {PLAN_FA.get(pl['tier'], pl['tier'])} ({pl['price']:,} تومان)",
+            callback_data=f"buy:{pl['tier']}",
+        )])
+    kb_rows.append([InlineKeyboardButton(text="« منوی اصلی", callback_data="menu")])
+
+    await callback.message.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="Markdown"
+    )
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("buy:"))
+async def cb_buy(callback: CallbackQuery):
+    """Create an IDPay payment and send the payment link."""
+    token = await get_user_token(callback.from_user.id)
+    if not token:
+        await callback.answer("ابتدا وارد شوید", show_alert=True)
+        return
+    tier = callback.data.split(":", 1)[1]
+    await callback.answer("در حال ساخت لینک پرداخت…")
+    result = await gateway.request("POST", "/api/v1/payments/create", token=token,
+                                   json={"plan_tier": tier})
+    if result.get("error"):
+        await callback.message.answer(
+            f"❌ {result['error']}\n\nبرای ارتقا می‌توانید با پشتیبانی تماس بگیرید."
+        )
+        return
+    link = result.get("link")
+    amount = result.get("amount", 0)
+    if not link:
+        await callback.message.answer("❌ لینک پرداخت ساخته نشد. دوباره تلاش کنید.")
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"💳 پرداخت {amount:,} تومانی", url=link)
+    ]])
+    await callback.message.answer(
+        "🧾 **فاکتور پرداخت ساخته شد**\n\n"
+        "با زدن دکمهٔ زیر به درگاه بانکی می‌روید.\n"
+        "بعد از پرداخت موفق، اشتراک فوراً فعال می‌شود.",
+        reply_markup=kb,
+        parse_mode="Markdown",
+    )
 
 
 @router.callback_query(F.data == "settings")

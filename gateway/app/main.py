@@ -22,8 +22,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from shared.config import get_settings
 from shared.models import (
     init_db, get_db, User, Subscription, Task, VibeSession,
-    UsageLog, SwarmRun, PlanTier, SubscriptionStatus, TaskStatus, _utcnow
+    UsageLog, SwarmRun, PlanTier, SubscriptionStatus, TaskStatus, _utcnow,
+    EngineNode, WorkerNode, Payment, SettingKV
 )
+from app.fleet import EnginePool, get_engine_pool, start_background_loops, stop_background_loops
 from shared.security import (
     create_access_token, hash_password, verify_password,
     require_auth, get_current_user
@@ -181,7 +183,24 @@ async def _require_owned_session(db: AsyncSession, user: User, session_id: str) 
 async def lifespan(app: FastAPI):
     settings = get_settings()
     await init_db(settings.DATABASE_URL)
+
+    # Seed the .env engine as node #1 when the fleet table is empty
+    from shared.models import _session_factory
+    async with _session_factory() as sdb:
+        count = (await sdb.execute(select(func.count()).select_from(EngineNode))).scalar() or 0
+        if count == 0 and settings.VIBE_ENGINE_URL:
+            sdb.add(EngineNode(
+                name="engine-primary",
+                url=settings.VIBE_ENGINE_URL,
+                api_key=None,
+                is_enabled=True,
+                is_healthy=True,
+            ))
+            await sdb.commit()
+
+    start_background_loops()
     yield
+    await stop_background_loops()
 
 
 app = FastAPI(
@@ -206,6 +225,14 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "gateway"}
+
+
+# ============================================================================
+# Engine Fleet (multi-server) — engine pool accessor
+# ============================================================================
+
+def get_pool() -> EnginePool:
+    return get_engine_pool()
 
 
 # ============================================================================
@@ -340,8 +367,8 @@ async def create_session(
     """Create a new Vibe-Trading session (with ownership tracking)."""
     await _check_limit(db, user, "session")
 
-    vibe = get_vibe()
-    result = await vibe.request("POST", "/sessions", json={"name": f"tg_{user.id}"})
+    pool = get_pool()
+    result = await pool.request(db, "POST", "/sessions", json={"name": f"tg_{user.id}"})
     session_id = result.get("session_id") or result.get("id")
 
     # Record ownership
@@ -367,8 +394,8 @@ async def send_message(
     await _require_owned_session(db, user, session_id)
     await _check_limit(db, user, "message")
 
-    vibe = get_vibe()
-    result = await vibe.request("POST", f"/sessions/{session_id}/messages", json=body)
+    pool = get_pool()
+    result = await pool.request(db, "POST", f"/sessions/{session_id}/messages", json=body)
 
     usage = await _get_usage(db, user.id)
     usage.messages_sent += 1
@@ -390,8 +417,13 @@ async def stream_events(
     await db.close()
 
     settings = get_settings()
-    url = f"{settings.VIBE_ENGINE_URL}/sessions/{session_id}/events"
-    headers = {"Authorization": f"Bearer {settings.VIBE_ENGINE_API_KEY}"} if settings.VIBE_ENGINE_API_KEY else {}
+    from app.fleet import get_engine_pool
+    _pool = get_engine_pool()
+    node = await _pool._pick(db)
+    base = (node.url if node else settings.VIBE_ENGINE_URL).rstrip("/")
+    key = (node.api_key if node and node.api_key else settings.VIBE_ENGINE_API_KEY)
+    url = f"{base}/sessions/{session_id}/events"
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
 
     async def event_generator():
         async with httpx.AsyncClient(timeout=None) as client:
@@ -413,8 +445,8 @@ async def get_messages(
     db: AsyncSession = Depends(get_db),
 ):
     await _require_owned_session(db, user, session_id)
-    vibe = get_vibe()
-    return await vibe.request("GET", f"/sessions/{session_id}/messages")
+    pool = get_pool()
+    return await pool.request(db, "GET", f"/sessions/{session_id}/messages")
 
 
 @app.get("/api/v1/vibe/runs")
@@ -423,11 +455,11 @@ async def list_runs(
     user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    vibe = get_vibe()
+    pool = get_pool()
     params: dict = {"limit": 200}
     if session_id:
         params["session_id"] = session_id
-    runs = await vibe.request("GET", "/runs", params=params)
+    runs = await pool.request(db, "GET", "/runs", params=params)
 
     # Filter to user's sessions (multi-tenant)
     owned = await _owned_session_ids(db, user)
@@ -439,8 +471,8 @@ async def list_runs(
 
 @app.get("/api/v1/vibe/swarm/presets")
 async def swarm_presets(user: User = Depends(require_auth)):
-    vibe = get_vibe()
-    return await vibe.request("GET", "/swarm/presets")
+    pool = get_pool()
+    return await pool.request(None, "GET", "/swarm/presets")
 
 
 @app.post("/api/v1/vibe/swarm/runs")
@@ -451,8 +483,8 @@ async def create_swarm_run(
 ):
     await _check_limit(db, user, "swarm")
 
-    vibe = get_vibe()
-    result = await vibe.request("POST", "/swarm/runs", json=body)
+    pool = get_pool()
+    result = await pool.request(db, "POST", "/swarm/runs", json=body)
     run_id = result.get("id")
 
     if run_id:
@@ -477,8 +509,8 @@ async def get_swarm_run(
     if not result.scalar_one_or_none() and not user.is_admin:
         raise HTTPException(403, "این اجرا متعلق به شما نیست")
 
-    vibe = get_vibe()
-    return await vibe.request("GET", f"/swarm/runs/{run_id}")
+    pool = get_pool()
+    return await pool.request(db, "GET", f"/swarm/runs/{run_id}")
 
 
 @app.get("/api/v1/vibe/swarm/runs/{run_id}/pdf")
@@ -494,8 +526,8 @@ async def swarm_run_pdf(
     if not result.scalar_one_or_none() and not user.is_admin:
         raise HTTPException(403, "این اجرا متعلق به شما نیست")
 
-    vibe = get_vibe()
-    status = await vibe.request("GET", f"/swarm/runs/{run_id}")
+    pool = get_pool()
+    status = await pool.request(db, "GET", f"/swarm/runs/{run_id}")
     report = (status or {}).get("final_report", "")
     if not report:
         raise HTTPException(400, "این اجرا هنوز گزارشی ندارد (تکمیل نشده)")
@@ -596,8 +628,8 @@ async def get_task_status(
 async def get_llm_settings(user: User = Depends(require_auth)):
     if not user.is_admin:
         raise HTTPException(403, "فقط ادمین")
-    vibe = get_vibe()
-    return await vibe.request("GET", "/settings/llm")
+    pool = get_pool()
+    return await pool.request(None, "GET", "/settings/llm")
 
 
 @app.put("/api/v1/vibe/settings/llm")
@@ -607,8 +639,8 @@ async def update_llm_settings(
 ):
     if not user.is_admin:
         raise HTTPException(403, "فقط ادمین")
-    vibe = get_vibe()
-    return await vibe.request("PUT", "/settings/llm", json=body)
+    pool = get_pool()
+    return await pool.request(None, "PUT", "/settings/llm", json=body)
 
 
 # ============================================================================
@@ -668,8 +700,8 @@ async def get_run_detail(
     artifacts_*_csv, ...) are stripped unless ?full=true — the bot Telegram
     flow needs them for charts/tables, the web dashboard does not.
     """
-    vibe = get_vibe()
-    detail = await vibe.request("GET", f"/runs/{run_id}")
+    pool = get_pool()
+    detail = await pool.request(db, "GET", f"/runs/{run_id}")
 
     # Privacy: the run must belong to one of this user's sessions
     run_session = (
@@ -710,9 +742,115 @@ async def alpha_list(
     zoo: str | None = Query(None),
     user: User = Depends(require_auth),
 ):
-    vibe = get_vibe()
+    pool = get_pool()
     params = {"zoo": zoo} if zoo else {}
-    return await vibe.request("GET", "/alpha/list", params=params)
+    return await pool.request(None, "GET", "/alpha/list", params=params)
+
+
+# ============================================================================
+# Strategy Discovery Proxy (evidence-gated: which strategies are alive/dead)
+# ============================================================================
+
+@app.get("/api/v1/vibe/strategies")
+async def strategies_list(
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    source: str | None = Query(None),
+    user: User = Depends(require_auth),
+):
+    """Unified strategy catalog (alpha_zoo + sdm) with evidence flags."""
+    pool = get_pool()
+    params: dict = {"limit": limit, "offset": offset}
+    if source:
+        params["source"] = source
+    return await pool.request(None, "GET", "/strategies", params=params)
+
+
+@app.get("/api/v1/vibe/strategies/query")
+async def strategies_query(
+    regime: str | None = Query(None),
+    min_sharpe: float | None = Query(None),
+    min_evidence_quality: str = Query("adequate"),
+    min_trades: int = Query(10, ge=0),
+    cost_feasible: bool = Query(True),
+    limit: int = Query(10, ge=1, le=100),
+    include_stale: bool = Query(False),
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Evidence-gated recommendations — stale/weak rows excluded by default."""
+    pool = get_pool()
+    params: dict = {
+        "min_evidence_quality": min_evidence_quality,
+        "min_trades": min_trades,
+        "cost_feasible": cost_feasible,
+        "limit": limit,
+        "include_stale": include_stale,
+    }
+    if regime:
+        params["regime"] = regime
+    if min_sharpe is not None:
+        params["min_sharpe"] = min_sharpe
+    return await pool.request(db, "GET", "/strategies/query", params=params)
+
+
+@app.get("/api/v1/vibe/strategies/{strategy_id}/evidence")
+async def strategy_evidence(
+    strategy_id: str,
+    regime: str | None = Query(None),
+    user: User = Depends(require_auth),
+):
+    """Full per-regime evidence breakdown for one strategy (unfiltered)."""
+    pool = get_pool()
+    params = {"regime": regime} if regime else {}
+    # strategy_id contains a colon (alpha_zoo:xxx) — path-safe, no slash
+    return await pool.request(None, 
+        "GET", f"/strategies/{strategy_id}/evidence", params=params
+    )
+
+
+@app.post("/api/v1/vibe/strategies/evidence/refresh")
+async def strategies_refresh(
+    body: dict,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rebuild evidence cache from run artifacts.
+
+    Body: {"runs": [{"strategy_id": "my-btc-macd", "run_dir": "<run_id>"}]} —
+    run_dir accepts a run_id shorthand (resolved server-side). Ownership of
+    every run is verified against this user's sessions first.
+    """
+    runs = body.get("runs") if isinstance(body, dict) else None
+    if runs is not None:
+        owned = await _owned_session_ids(db, user)
+        for entry in runs if isinstance(runs, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            rd = str(entry.get("run_dir", ""))
+            if rd and "/" not in rd and "\\" not in rd and not user.is_admin:
+                # run_id shorthand — verify the run belongs to this user
+                try:
+                    detail = await get_run_detail(run_id=rd, user=user, db=db)
+                    _ = detail
+                except HTTPException:
+                    raise HTTPException(
+                        403, f"این گزارش متعلق به شما نیست: {rd}"
+                    )
+                # full ownership check done inside get_run_detail; also make
+                # sure the session is actually owned (non-admin path)
+                run_session = detail.get("session_id") or (
+                    detail.get("run_context") or {}
+                ).get("raw_context", {}).get("session_id")
+                if run_session and run_session not in owned:
+                    raise HTTPException(
+                        403, f"این گزارش متعلق به شما نیست: {rd}"
+                    )
+    await _check_limit(db, user, "backtest")
+    pool = get_pool()
+    return await pool.request(db, 
+        "POST", "/strategies/evidence/refresh", json=body
+    )
 
 
 @app.get("/api/v1/vibe/alpha/{alpha_id}")
@@ -720,8 +858,8 @@ async def alpha_detail(
     alpha_id: str,
     user: User = Depends(require_auth),
 ):
-    vibe = get_vibe()
-    return await vibe.request("GET", f"/alpha/{alpha_id}")
+    pool = get_pool()
+    return await pool.request(None, "GET", f"/alpha/{alpha_id}")
 
 
 @app.post("/api/v1/vibe/alpha/bench")
@@ -732,8 +870,8 @@ async def alpha_bench(
 ):
     """Start an alpha bench job. Checks quota."""
     await _check_limit(db, user, "backtest")
-    vibe = get_vibe()
-    result = await vibe.request("POST", "/alpha/bench", json=body)
+    pool = get_pool()
+    result = await pool.request(db, "POST", "/alpha/bench", json=body)
     return result
 
 
@@ -771,8 +909,8 @@ async def list_swarm_runs(
     user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    vibe = get_vibe()
-    runs = await vibe.request("GET", "/swarm/runs")
+    pool = get_pool()
+    runs = await pool.request(db, "GET", "/swarm/runs")
 
     # Filter to user's swarm runs (multi-tenant)
     result = await db.execute(
@@ -794,11 +932,11 @@ async def list_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     """List the user's chat sessions (multi-tenant: only owned)."""
-    vibe = get_vibe()
+    pool = get_pool()
     owned = await _owned_session_ids(db, user)
     if user.is_admin and not owned:
-        return await vibe.request("GET", "/sessions")
-    sessions = await vibe.request("GET", "/sessions")
+        return await pool.request(db, "GET", "/sessions")
+    sessions = await pool.request(db, "GET", "/sessions")
     if not user.is_admin:
         sessions = [s for s in sessions if s.get("id") in owned or s.get("session_id") in owned]
     return sessions
@@ -812,13 +950,370 @@ async def session_history(
 ):
     """Full chat history of a session (ownership-checked)."""
     await _require_owned_session(db, user, session_id)
-    vibe = get_vibe()
-    return await vibe.request("GET", f"/sessions/{session_id}/messages")
+    pool = get_pool()
+    return await pool.request(db, "GET", f"/sessions/{session_id}/messages")
 
 
 # ============================================================================
 # Web App (static dashboard + report chart/PDF)
 # ============================================================================
+
+
+# ============================================================================
+# Admin — Engine Fleet / Worker Registry (multi-server management)
+# ============================================================================
+
+class EngineNodeIn(BaseModel):
+    name: str
+    url: str
+    api_key: str | None = None
+    region: str | None = None
+    max_concurrency: int = 10
+    is_enabled: bool = True
+
+
+@app.get("/api/v1/admin/fleet")
+async def admin_fleet(user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    nodes = (await db.execute(select(EngineNode).order_by(EngineNode.id))).scalars().all()
+    return [
+        {
+            "id": n.id, "name": n.name, "url": n.url,
+            "region": n.region, "max_concurrency": n.max_concurrency,
+            "active": n.active_concurrency, "is_enabled": n.is_enabled,
+            "is_healthy": n.is_healthy, "fail_count": n.health_fail_count,
+            "last_health_at": n.last_health_at.isoformat() if n.last_health_at else None,
+            "last_health_detail": n.last_health_detail,
+        } for n in nodes
+    ]
+
+
+@app.post("/api/v1/admin/fleet")
+async def admin_fleet_add(req: EngineNodeIn, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Add a new engine server (any host:port running Vibe-Trading)."""
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    exists = (await db.execute(select(EngineNode).where(EngineNode.name == req.name))).scalar_one_or_none()
+    if exists:
+        raise HTTPException(400, "نام تکراری است")
+    node = EngineNode(
+        name=req.name, url=req.url.rstrip("/"), api_key=req.api_key,
+        region=req.region, max_concurrency=req.max_concurrency,
+        is_enabled=req.is_enabled,
+    )
+    # immediate health probe before accepting
+    key = req.api_key or get_settings().VIBE_ENGINE_API_KEY
+    ok, detail = False, ""
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(f"{node.url.rstrip('/')}/health",
+                                    headers={"Authorization": f"Bearer {key}"} if key else {})
+        ok = resp.status_code == 200
+        detail = f"HTTP {resp.status_code}"
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {str(exc)[:120]}"
+    node.is_healthy = ok
+    node.last_health_at = _utcnow()
+    node.last_health_detail = detail
+    db.add(node)
+    await db.commit()
+    return {"id": node.id, "name": node.name, "healthy": ok, "detail": detail}
+
+
+@app.put("/api/v1/admin/fleet/{node_id}")
+async def admin_fleet_update(node_id: int, req: EngineNodeIn, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    node = (await db.execute(select(EngineNode).where(EngineNode.id == node_id))).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, "گره یافت نشد")
+    node.name = req.name
+    node.url = req.url.rstrip("/")
+    if req.api_key is not None:
+        node.api_key = req.api_key
+    node.region = req.region
+    node.max_concurrency = req.max_concurrency
+    node.is_enabled = req.is_enabled
+    await db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/v1/admin/fleet/{node_id}")
+async def admin_fleet_delete(node_id: int, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    node = (await db.execute(select(EngineNode).where(EngineNode.id == node_id))).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, "گره یافت نشد")
+    await db.delete(node)
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/admin/fleet/{node_id}/health")
+async def admin_fleet_recheck(node_id: int, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Force an immediate health probe of one node."""
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    node = (await db.execute(select(EngineNode).where(EngineNode.id == node_id))).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, "گره یافت نشد")
+    pool = get_pool()
+    tmp = EngineNode(
+        id=node.id, name=node.name, url=node.url, api_key=node.api_key,
+        is_enabled=True,
+    )
+    # reuse health_check_all on a mini-query
+    settings = get_settings()
+    key = node.api_key or settings.VIBE_ENGINE_API_KEY
+    ok, detail = False, ""
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(f"{node.url.rstrip('/')}/health",
+                                    headers={"Authorization": f"Bearer {key}"} if key else {})
+        ok = resp.status_code == 200
+        detail = f"HTTP {resp.status_code} {resp.text[:160]}"
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {str(exc)[:160]}"
+    if ok:
+        node.health_fail_count = 0
+        node.is_healthy = True
+    else:
+        node.health_fail_count = (node.health_fail_count or 0) + 1
+        if node.health_fail_count >= 2:
+            node.is_healthy = False
+    node.last_health_at = _utcnow()
+    node.last_health_detail = detail[:500]
+    await db.commit()
+    return {"id": node.id, "name": node.name, "healthy": ok, "detail": detail}
+
+
+@app.get("/api/v1/admin/workers")
+async def admin_workers(user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Live worker registry (DB mirror of Redis + gateway scan)."""
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    rows = (await db.execute(select(WorkerNode).order_by(WorkerNode.name))).scalars().all()
+    return [
+        {
+            "name": w.name, "status": w.status,
+            "last_seen_at": w.last_seen_at.isoformat() if w.last_seen_at else None,
+            "info": w.info,
+        } for w in rows
+    ]
+
+
+# ============================================================================
+# Admin — Subscriptions & Users management
+# ============================================================================
+
+class PlanGrant(BaseModel):
+    plan_tier: str       # basic | pro | enterprise
+    days: int = 30
+
+
+@app.post("/api/v1/admin/users/{user_id}/grant")
+async def admin_grant_plan(user_id: int, req: PlanGrant, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Manually grant/extend a user's subscription (admin)."""
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not target:
+        raise HTTPException(404, "کاربر یافت نشد")
+    tier = PlanTier(req.plan_tier)
+    # find current active sub of that tier to extend, else create
+    now = _utcnow()
+    sub = (await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == target.id,
+            Subscription.plan_tier == tier,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.expires_at > now,
+        ).order_by(Subscription.expires_at.desc())
+    )).scalar_one_or_none()
+    base = sub.expires_at if sub else now
+    if sub:
+        sub.expires_at = base + timedelta(days=req.days)
+    else:
+        db.add(Subscription(
+            user_id=target.id, plan_tier=tier,
+            status=SubscriptionStatus.ACTIVE,
+            expires_at=base + timedelta(days=req.days),
+        ))
+    await db.commit()
+    return {"ok": True, "plan": tier.value, "expires": (base + timedelta(days=req.days)).isoformat()}
+
+
+@app.put("/api/v1/admin/users/{user_id}/toggle")
+async def admin_toggle_user(user_id: int, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not target:
+        raise HTTPException(404, "کاربر یافت نشد")
+    if target.id == user.id:
+        raise HTTPException(400, "نمی‌توانید خودتان را غیرفعال کنید")
+    target.is_active = not target.is_active
+    await db.commit()
+    return {"ok": True, "is_active": target.is_active}
+
+
+# ============================================================================
+# Payments — IDPay (create → gateway redirect → callback → activate plan)
+# ============================================================================
+
+PLAN_PRICES = {
+    PlanTier.BASIC: 299_000,
+    PlanTier.PRO: 799_000,
+    PlanTier.ENTERPRISE: 1_999_000,
+}
+
+PLAN_DAYS = {PlanTier.BASIC: 30, PlanTier.PRO: 30, PlanTier.ENTERPRISE: 30}
+
+
+class PaymentRequest(BaseModel):
+    plan_tier: str  # basic | pro | enterprise
+
+
+def _idpay_headers():
+    settings = get_settings()
+    if not settings.IDPAY_API_KEY:
+        return None
+    return {"X-API-KEY": settings.IDPAY_API_KEY, "Content-Type": "application/json"}
+
+
+@app.post("/api/v1/payments/create")
+async def payment_create(req: PaymentRequest, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Create an IDPay payment and return the payment link."""
+    tier = PlanTier(req.plan_tier) if req.plan_tier != "free" else None
+    if tier is None or tier == PlanTier.FREE or tier not in PLAN_PRICES:
+        raise HTTPException(400, "پلن نامعتبر")
+    amount = PLAN_PRICES[tier]
+    pay = Payment(user_id=user.id, plan_tier=tier, amount=amount)
+    db.add(pay)
+    await db.commit()
+
+    headers = _idpay_headers()
+    if not headers:
+        raise HTTPException(503, "درگاه پرداخت تنظیم نشده (IDPAY_API_KEY خالی است) — با پشتیبانی تماس بگیرید یا از ادمین بخواهید پلن را دستی فعال کند")
+
+    settings = get_settings()
+    cb = settings.PAYMENT_CALLBACK_URL or f"{settings.PUBLIC_BASE_URL}/api/v1/payments/callback"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post("https://api.idpay.ir/v1.1/payment", headers=headers, json={
+                "order_id": f"pay-{pay.id}",
+                "amount": amount,  # Tomans
+                "callback": cb,
+            })
+        data = resp.json()
+    except Exception as exc:
+        pay.status = "failed"
+        await db.commit()
+        raise HTTPException(502, f"خطای درگاه: {exc}")
+
+    if str(data.get("status")) not in ("100", "1"):
+        pay.status = "failed"
+        pay.gateway_ref = str(data.get("error_message", ""))[:200]
+        await db.commit()
+        raise HTTPException(502, f"درگاه پرداخت خطا داد: {data.get('error_message') or data}")
+
+    pay.authority = str(data.get("id", ""))
+    pay.gateway_ref = str(data.get("link", ""))[:250]
+    await db.commit()
+    return {"payment_id": pay.id, "link": data.get("link"), "authority": pay.authority, "amount": amount}
+
+
+@app.get("/api/v1/payments/callback")
+async def payment_callback(
+    id: str = Query(...), order_id: str = Query(...),
+    track_id: str = Query(...), status: str = Query(...),
+    amount: str = Query(""),
+):
+    """IDPay redirects the user here after payment; then verify server-side."""
+    if status not in ("100", "2", "3", "10"):  # 100/2/3/10 = paid-ish states on return
+        return Response(
+            content=f"<html dir='rtl'><body style='font-family:Vazir,sans-serif;text-align:center;padding-top:60px'><h2>❌ پرداخت ناموفق بود (کد {status})</h2></body></html>",
+            media_type="text/html",
+        )
+    # verify via IDPay verify API
+    headers = _idpay_headers()
+    if not headers:
+        return Response(content="<h2>درگاه تنظیم نشده</h2>", media_type="text/html")
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post("https://api.idpay.ir/v1.1/payment/verify", headers=headers, json={
+                "id": id, "order_id": order_id,
+            })
+        data = resp.json()
+    except Exception as exc:
+        return Response(content=f"<h2>خطای تأیید: {exc}</h2>", media_type="text/html")
+
+    ok_verify = str(data.get("status")) == "100" or (str(data.get("status")) == "101" and data.get("payment"))
+    pay_id = int(order_id.split("-")[1]) if order_id.startswith("pay-") else None
+    if not pay_id:
+        return Response(content="<h2>سفارش نامعتبر</h2>", media_type="text/html")
+
+    from shared.models import _session_factory
+    async with _session_factory() as db:
+        pay = (await db.execute(select(Payment).where(Payment.id == pay_id))).scalar_one_or_none()
+        if not pay:
+            return Response(content="<h2>پرداخت یافت نشد</h2>", media_type="text/html")
+        if ok_verify:
+            if pay.status != "paid":
+                pay.status = "paid"
+                pay.payment_ref = str(data.get("track_id", ""))[:250]
+                pay.verified_at = _utcnow()
+                days = PLAN_DAYS[PlanTier(pay.plan_tier.value if hasattr(pay.plan_tier, 'value') else pay.plan_tier)]
+                tier = PlanTier(pay.plan_tier.value if hasattr(pay.plan_tier, 'value') else pay.plan_tier)
+                sub = (await db.execute(
+                    select(Subscription).where(
+                        Subscription.user_id == pay.user_id,
+                        Subscription.plan_tier == tier,
+                        Subscription.status == SubscriptionStatus.ACTIVE,
+                        Subscription.expires_at > _utcnow(),
+                    )
+                )).scalar_one_or_none()
+                base = sub.expires_at if sub else _utcnow()
+                if sub:
+                    sub.expires_at = base + timedelta(days=days)
+                else:
+                    db.add(Subscription(
+                        user_id=pay.user_id, plan_tier=tier,
+                        status=SubscriptionStatus.ACTIVE,
+                        expires_at=base + timedelta(days=days),
+                    ))
+                await db.commit()
+            html = "<html dir='rtl'><body style='font-family:Vazir,sans-serif;text-align:center;padding-top:60px'><h2>✅ پرداخت موفق! اشتراک شما فعال شد.</h2><p>می‌توانید این صفحه را ببندید.</p></body></html>"
+        else:
+            pay.status = "failed"
+            await db.commit()
+            html = f"<html dir='rtl'><body style='font-family:Vazir,sans-serif;text-align:center;padding-top:60px'><h2>❌ تأیید پرداخت ناموفق</h2><p>{data.get('status') or ''}</p></body></html>"
+    return Response(content=html, media_type="text/html")
+
+
+@app.get("/api/v1/payments/plans")
+async def payment_plans():
+    """Public plan catalog with prices (Toman) for bot/webapp purchase UI."""
+    return [
+        {"tier": t.value, "price": price, "days": PLAN_DAYS[t]}
+        for t, price in PLAN_PRICES.items()
+    ]
+
+
+@app.get("/api/v1/payments/history")
+async def payment_history(user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(
+        select(Payment).where(Payment.user_id == user.id).order_by(Payment.created_at.desc()).limit(50)
+    )).scalars().all()
+    return [
+        {
+            "id": p.id, "plan": p.plan_tier.value, "amount": p.amount,
+            "status": p.status, "created_at": p.created_at.isoformat() if p.created_at else None,
+        } for p in rows
+    ]
+
 
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -848,7 +1343,10 @@ class NoCacheHTMLMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheHTMLMiddleware)
 
-app.mount("/app", StaticFiles(directory="/app/app/static", html=True), name="webapp")
+import os as _os
+_STATIC_DIR = _os.getenv("WEBAPP_STATIC_DIR", "/app/app/static")
+if _os.path.isdir(_STATIC_DIR):
+    app.mount("/app", StaticFiles(directory=_STATIC_DIR, html=True), name="webapp")
 
 
 @app.get("/app")
@@ -930,8 +1428,8 @@ async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSess
     # factor research is a separate engine endpoint — attach if the run has it
     if detail.get("has_factor_artifacts"):
         try:
-            vibe = get_vibe()
-            detail["factor_report"] = await vibe.request("GET", f"/runs/{run_id}/factor")
+            pool = get_pool()
+            detail["factor_report"] = await pool.request(db, "GET", f"/runs/{run_id}/factor")
         except Exception:
             pass
     from app.pdf_report import build_backtest_pdf  # type: ignore
@@ -959,15 +1457,15 @@ async def run_code(run_id: str, user: User = Depends(require_auth), db: AsyncSes
     """
     # Ownership check first (raises 403 for foreign runs)
     await get_run_detail(run_id=run_id, user=user, db=db)
-    vibe = get_vibe()
+    pool = get_pool()
     files: dict = {}
     try:
-        files = await vibe.request("GET", f"/runs/{run_id}/code") or {}
+        files = await pool.request(db, "GET", f"/runs/{run_id}/code") or {}
     except Exception:
         files = {}
     pine: dict = {"exists": False, "content": None}
     try:
-        pine = await vibe.request("GET", f"/runs/{run_id}/pine") or pine
+        pine = await pool.request(db, "GET", f"/runs/{run_id}/pine") or pine
     except Exception:
         pass
     if isinstance(files, dict) and "files" in files:

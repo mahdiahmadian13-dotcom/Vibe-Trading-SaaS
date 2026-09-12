@@ -159,6 +159,72 @@ class SwarmRun(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
+class EngineNode(Base):
+    """Registered Vibe-Trading engine (multi-engine / multi-server fleet).
+
+    The gateway load-balances chat/backtest/swarm proxy calls across
+    healthy nodes. A node is marked unhealthy after HEALTH_FAILS
+    consecutive failed health checks and never receives traffic until it
+    reports healthy again.
+    """
+    __tablename__ = "engine_nodes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), unique=True, nullable=False, index=True)
+    url = Column(String(512), nullable=False)          # http://host:8899
+    api_key = Column(String(256), nullable=True)        # per-node override (else global)
+    region = Column(String(64), nullable=True)
+    max_concurrency = Column(Integer, default=10)
+    active_concurrency = Column(Integer, default=0)     # inflight counter (approx)
+    is_enabled = Column(Boolean, default=True)
+    is_healthy = Column(Boolean, default=True)
+    health_fail_count = Column(Integer, default=0)
+    last_health_at = Column(DateTime(timezone=True), nullable=True)
+    last_health_detail = Column(String(512), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class WorkerNode(Base):
+    """Registry of ARQ workers (mirrors the Redis workers:registry hash).
+
+    Populated by the gateway when it scans Redis; supports workers that
+    cannot write the DB themselves (remote servers).
+    """
+    __tablename__ = "worker_nodes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), unique=True, nullable=False, index=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(32), default="ready")        # ready | gone
+    info = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class Payment(Base):
+    """One payment attempt (IDPay) for a subscription plan."""
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    plan_tier = Column(Enum(PlanTier), nullable=False)
+    amount = Column(Integer, nullable=False)            # IRR/Toman
+    status = Column(String(32), default="pending")      # pending|paid|failed|canceled
+    authority = Column(String(128), nullable=True, index=True)   # IDPay track id
+    gateway_ref = Column(String(256), nullable=True)
+    payment_ref = Column(String(256), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class SettingKV(Base):
+    """Simple key-value store for runtime settings (plan prices, etc.)."""
+    __tablename__ = "setting_kv"
+
+    key = Column(String(128), primary_key=True)
+    value = Column(JSON, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 # ============================================================================
 # Database Engine
 # ============================================================================

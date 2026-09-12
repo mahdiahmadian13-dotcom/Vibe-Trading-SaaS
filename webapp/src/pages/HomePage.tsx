@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, ArrowUpRight, BarChart3, Bot, LineChart, Menu, MessageSquare, Sparkles, Wallet, X } from "lucide-react";
+import { Activity, ArrowUpRight, BarChart3, Bot, FlaskConical, LineChart, Menu, MessageSquare, Sparkles, Wallet, X } from "lucide-react";
 import { auth, getRuns, type RunRow } from "@/api/client";
+import { queryStrategies } from "@/api/discovery";
 import { faNum, fmtCls, fmtPct } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Badge, StatusDot } from "@/components/ui/Badge";
@@ -124,9 +125,15 @@ function RunRowCard({ run, onOpen }: { run: RunRow; onOpen: () => void }) {
 
 /* ---------------------------------- page ---------------------------------- */
 
-export default function HomePage({ goChat, goReports }: { goChat: () => void; goReports: () => void }) {
+export default function HomePage({ goChat, goReports, goDiscovery }: { goChat: () => void; goReports: () => void; goDiscovery: () => void }) {
   const { runs, error } = useRuns();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [aliveCount, setAliveCount] = useState<number | null>(null);
+  useEffect(() => {
+    queryStrategies({ limit: 50, min_evidence_quality: "marginal", cost_feasible: false })
+      .then((r) => setAliveCount(r.items.filter((x) => x.decay_status !== "stale" && x.evidence_quality !== "insufficient").length))
+      .catch(() => setAliveCount(null));
+  }, []);
 
   useEffect(() => {
     if (!auth.token) location.href = "/app/legacy.html";
@@ -224,6 +231,29 @@ export default function HomePage({ goChat, goReports }: { goChat: () => void; go
         )}
       </div>
 
+      {/* ---------- strategy discovery teaser ---------- */}
+      <button
+        onClick={goDiscovery}
+        className="mt-9 block w-full overflow-hidden rounded-2xl border border-brand/25 bg-gradient-to-l from-brand/[.12] via-panel2/80 to-panel/60 p-5 text-right transition-all active:border-brand/50 md:mt-10 md:p-6 md:hover:-translate-y-0.5 md:hover:border-brand/40"
+      >
+        <div className="flex items-center gap-4">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-brand/15 text-indigo-300 ring-1 ring-inset ring-brand/30">
+            <FlaskConical size={22} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[14.5px] font-extrabold">کشف استراتژی</div>
+            <div className="mt-1 text-[12px] leading-6 text-muted">
+              {aliveCount == null
+                ? "کدوم استراتژی‌ها هنوز زنده‌ان و کدوم‌ها مردن؟"
+                : aliveCount > 0
+                  ? `الان ${faNum(aliveCount)} استراتژی زنده بر اساس شواهد واقعی داری — ببین کدوم‌ان`
+                  : "هنوز شواهدی ثبت نشده — از بک‌تست‌هات شواهد بساز"}
+            </div>
+          </div>
+          <ArrowUpRight size={18} className="shrink-0 -scale-x-100 text-brand" />
+        </div>
+      </button>
+
       {/* ---------- features (mobile: compact horizontal scroll) ---------- */}
       <div className="mt-12 hidden gap-4 md:grid md:grid-cols-3">
         {[
@@ -272,6 +302,7 @@ export default function HomePage({ goChat, goReports }: { goChat: () => void; go
             <DrawerItem icon={<MessageSquare size={17} />} label="چت با AI" onClick={() => { setMenuOpen(false); goChat(); }} />
             <DrawerItem icon={<Bot size={17} />} label="تیم‌های هوش مصنوعی" onClick={() => { setMenuOpen(false); location.hash = "#swarm"; location.reload(); }} />
             <DrawerItem icon={<LineChart size={17} />} label="گزارش‌های بک‌تست" onClick={() => { setMenuOpen(false); location.href = "/app/legacy.html#reports"; }} />
+            <DrawerItem icon={<FlaskConical size={17} />} label="کشف استراتژی" onClick={() => { setMenuOpen(false); goDiscovery(); }} />
             <div className="my-4 h-px bg-line" />
             <DrawerItem icon={<X size={17} />} label="خروج از حساب" danger onClick={logout} />
           </motion.div>

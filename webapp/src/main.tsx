@@ -1,18 +1,19 @@
 import { StrictMode, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { createRoot } from "react-dom/client";
-import { FileBarChart, House, MessagesSquare, Users } from "lucide-react";
+import { FileBarChart, FlaskConical, House, MessagesSquare, Users } from "lucide-react";
 import HomePage from "@/pages/HomePage";
 import SwarmPage from "@/pages/SwarmPage";
 import ChatPage from "@/pages/ChatPage";
 import ReportsPage from "@/pages/ReportsPage";
+import DiscoveryPage from "@/pages/DiscoveryPage";
 import { auth } from "@/api/client";
 import "@/index.css";
 
 function App() {
   const [view, setView] = useState(() => {
     const h = location.hash;
-    return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : "home";
+    return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : h === "#discovery" ? "discovery" : "home";
   });
 
   useEffect(() => {
@@ -22,7 +23,7 @@ function App() {
   useEffect(() => {
     const onHash = () => {
       const h = location.hash;
-      setView(h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : "home");
+      setView(h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : h === "#discovery" ? "discovery" : "home");
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -31,6 +32,7 @@ function App() {
   const goSwarm = () => { location.hash = "#swarm"; setView("swarm"); };
   const goChat = () => { location.hash = "#chat"; setView("chat"); };
   const goReports = () => { location.hash = "#reports"; setView("reports"); };
+  const goDiscovery = () => { location.hash = "#discovery"; setView("discovery"); };
   const goHome = () => { if (location.hash) location.hash = ""; setView("home"); };
 
   return view === "swarm" ? (
@@ -51,9 +53,21 @@ function App() {
       <ReportsPage />
       <BottomNav view="reports" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
+  ) : view === "discovery" ? (
+    <>
+      <TopBar onHome={goHome} subtitle="کشف استراتژی" />
+      <div className="mx-auto hidden w-full max-w-6xl gap-6 px-8 pt-8 md:flex md:pb-16">
+        <SideNav active="discovery" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} goDiscovery={goDiscovery} />
+        <div className="min-w-0 flex-1"><DiscoveryPage bare /></div>
+      </div>
+      <div className="md:hidden">
+        <DiscoveryPage />
+      </div>
+      <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
+    </>
   ) : (
     <>
-      <HomePage goChat={goChat} goReports={goReports} />
+      <HomePage goChat={goChat} goReports={goReports} goDiscovery={goDiscovery} />
       <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
   );
@@ -70,6 +84,48 @@ function TopBar({ onHome, subtitle }: { onHome: () => void; subtitle: string }) 
         <span className="text-[11.5px] text-muted">{subtitle}</span>
       </div>
     </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   SideNav — desktop sidebar (discovery lives here + drawer, never bottom dock).
+--------------------------------------------------------------------------- */
+const SIDE_ITEMS: Array<{ id: string; label: string; desc: string; icon: typeof House }> = [
+  { id: "home", label: "خانه", desc: "نمای کلی", icon: House },
+  { id: "chat", label: "چت با AI", desc: "تحلیلگر هوشمند", icon: MessagesSquare },
+  { id: "swarm", label: "تیم‌های هوش مصنوعی", desc: "اجراهای چندعاملی", icon: Users },
+  { id: "reports", label: "گزارش‌های بک‌تست", desc: "نتایج و PDF", icon: FileBarChart },
+  { id: "discovery", label: "کشف استراتژی", desc: "زنده‌ها و مرده‌ها", icon: FlaskConical },
+];
+
+function SideNav({ active, onHome, onSwarm, onChat, goReports, goDiscovery }: {
+  active: string; onHome: () => void; onSwarm: () => void; onChat: () => void; goReports: () => void; goDiscovery: () => void;
+}) {
+  const handlers: Record<string, () => void> = { home: onHome, chat: onChat, swarm: onSwarm, reports: goReports, discovery: goDiscovery };
+  return (
+    <aside className="w-60 shrink-0">
+      <div className="sticky top-20 space-y-1 rounded-2xl border border-line bg-panel/60 p-2.5">
+        {SIDE_ITEMS.map((t) => {
+          const isActive = active === t.id;
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.id}
+              onClick={handlers[t.id]}
+              className={`flex w-full items-center gap-3 rounded-xl px-3.5 py-3 text-right transition-colors ${isActive ? "bg-brand/15 text-indigo-200 ring-1 ring-inset ring-brand/40" : "text-muted hover:bg-white/5 hover:text-ink"}`}
+            >
+              <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${isActive ? "bg-brand/20 text-indigo-200" : "bg-white/[.04] text-muted"}`}>
+                <Icon size={17} strokeWidth={isActive ? 2.4 : 2} />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[13px] font-bold leading-5">{t.label}</span>
+                <span className="block truncate text-[10.5px] leading-4 opacity-70">{t.desc}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
   );
 }
 

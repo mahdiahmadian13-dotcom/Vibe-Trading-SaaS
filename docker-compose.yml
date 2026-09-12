@@ -143,6 +143,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - WORKER_NAME=worker-central-1
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-vt}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vibetrader}
+      - VIBE_ENGINE_URL=${VIBE_ENGINE_URL:-http://vibe-trading-vibe-trading-1:8899}
+    networks:
+      - default
+      - engine_net
     depends_on:
       redis:
         condition: service_healthy

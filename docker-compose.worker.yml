@@ -2,19 +2,29 @@
 # Vibe-Trading SaaS — Remote Worker (connects to central Redis)
 # ============================================================================
 # Usage on remote server:
-#   BROKER_URL=redis://CENTRAL_IP:6379 docker compose -f docker-compose.worker.yml up -d
+#   BROKER_URL=redis://CENTRAL_IP:6379 \
+#   ENGINE_URL=http://CENTRAL_IP:8899 \
+#   ENGINE_API_KEY=<vibe engine key> \
+#   DATABASE_URL=postgresql+asyncpg://vt:PASS@CENTRAL_IP:5432/vibetrader \
+#   docker compose -f docker-compose.worker.yml up -d --build
+#
+# Minimal (no DB access): worker runs tasks but cannot mark Task rows —
+# progress still flows through Redis pub/sub. DATABASE_URL is recommended.
 # ============================================================================
 
 services:
   worker:
     build:
-      context: ./worker
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: worker/Dockerfile
     environment:
       - REDIS_URL=${BROKER_URL:?Set BROKER_URL=redis://CENTRAL_IP:6379}
-      - WORKER_NAME=worker-${SERVER_ID:-$(hostname)}
+      - WORKER_NAME=${WORKER_NAME:-worker-$(hostname)}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
       - WORKER_MAX_TASKS=${WORKER_MAX_TASKS:-100}
+      - VIBE_ENGINE_URL=${ENGINE_URL:-http://CENTRAL_IP:8899}
+      - VIBE_ENGINE_API_KEY=${ENGINE_API_KEY:-}
+      - DATABASE_URL=${DATABASE_URL:-}
     restart: always
     deploy:
       resources:
@@ -22,7 +32,7 @@ services:
           cpus: "${CPU_LIMIT:-2.0}"
           memory: "${MEM_LIMIT:-2G}"
     healthcheck:
-      test: ["CMD", "python", "-c", "import redis; r = redis.Redis.from_url('${BROKER_URL}'); r.ping()"]
+      test: ["CMD", "python", "-c", "import redis,os; r=redis.Redis.from_url(os.environ['REDIS_URL']); r.ping()"]
       interval: 30s
       timeout: 10s
       retries: 3
