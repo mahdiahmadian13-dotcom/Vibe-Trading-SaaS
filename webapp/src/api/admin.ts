@@ -88,6 +88,9 @@ export const scaleServer = (id: number, body: { desired_workers: number; worker_
       docker_ok: boolean; last_heartbeat_at: string | null }[];
     per_worker: { name: string; server: string; total: number; completed: number; failed: number;
       running: number; pending: number; avg_sec: number | null; success_pct: number }[];
+    dispatcher: { workers: { name: string; status: string; concurrency: number;
+      queue_depth: number; inflight: number; load: number }[];
+      stats: Record<string, number>; fallback_depth: number };
     series_15min: { t: number; total: number; completed: number; failed: number }[];
     recent: { task_id: string; type: string; status: string | null; worker: string | null; server: string;
       user: number; created_at: string | null; duration_sec: number | null; error: string | null }[];

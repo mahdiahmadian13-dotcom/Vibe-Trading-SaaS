@@ -693,6 +693,61 @@ docker compose -f docker-compose.worker.yml up -d --build`;
           <Card className="p-4"><div className="text-[11px] font-bold text-muted">ورکر ثبت‌شده</div><div className="mt-1 text-xl font-black">{data.per_server.reduce((a, s) => a + s.registered_workers, 0)}</div></Card>
         </div>
 
+        {/* dispatcher live routing */}
+        <Card className="p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-extrabold">دیسپچر — مسیریابی زنده (صف اختصاصی هر ورکر)</div>
+            <div className="flex flex-wrap gap-2 text-[10px]">
+              <span className="rounded-full bg-white/5 px-2 py-0.5 text-muted">مسیریابی‌شده: <b className="text-sky-300">{data.dispatcher?.stats?.routed ?? 0}</b></span>
+              <span className="rounded-full bg-white/5 px-2 py-0.5 text-muted">نجات از ورکر مرده: <b className="text-emerald-300">{data.dispatcher?.stats?.rescued_from_dead ?? 0}</b></span>
+              <span className="rounded-full bg-white/5 px-2 py-0.5 text-muted">بازگشتی از fallback: <b className="text-amber-300">{data.dispatcher?.stats?.reaped ?? 0}</b></span>
+              <span className="rounded-full bg-white/5 px-2 py-0.5 text-muted">عمق fallback: <b className={data.dispatcher?.fallback_depth ? "text-red-300" : "text-emerald-300"}>{data.dispatcher?.fallback_depth ?? 0}</b></span>
+            </div>
+          </div>
+          <div className="overflow-auto">
+            <table className="w-full min-w-[560px] text-xs">
+              <thead className="bg-white/[.04] text-[11px] text-muted"><tr>
+                <th className="px-3 py-2 text-right">ورکر</th>
+                <th className="px-3 py-2 text-right">وضعیت</th>
+                <th className="px-3 py-2 text-right">ظرفیت همزمان</th>
+                <th className="px-3 py-2 text-right">صف اختصاصی</th>
+                <th className="px-3 py-2 text-right">در حال اجرا</th>
+                <th className="px-3 py-2 text-right">بار کل</th>
+              </tr></thead>
+              <tbody>
+                {(data.dispatcher?.workers ?? []).length === 0 && <tr><td colSpan={6} className="px-3 py-4 text-center text-muted">ورکری در رجیستری نیست</td></tr>}
+                {(data.dispatcher?.workers ?? []).map((w) => {
+                  const cap = data.dispatcher!.workers.reduce((a, x) => Math.max(a, x.load), 1);
+                  const hot = w.load >= w.concurrency * 2;
+                  return (
+                    <tr key={w.name} className="border-t border-white/5">
+                      <td className="px-3 py-2 font-bold">{w.name}</td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${w.status === "ready" ? "bg-emerald-500/15 text-emerald-200" : "bg-red-500/15 text-red-200"}`}>{w.status === "ready" ? "آماده" : w.status}</span>
+                      </td>
+                      <td className="px-3 py-2 text-muted">{w.concurrency}</td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${w.queue_depth ? "bg-amber-500/15 text-amber-200" : "bg-white/5 text-muted"}`}>{w.queue_depth}</span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${w.inflight ? "bg-sky-500/15 text-sky-200" : "bg-white/5 text-muted"}`}>{w.inflight}</span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 w-24 overflow-hidden rounded-full bg-white/10">
+                            <div className={`h-full rounded-full ${hot ? "bg-gradient-to-l from-red-400 to-amber-400" : "bg-gradient-to-l from-sky-400 to-emerald-400"}`} style={{ width: `${Math.min((w.load / cap) * 100, 100)}%` }} />
+                          </div>
+                          <span className={`font-black ${hot ? "text-red-300" : ""}`}>{w.load}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
         {/* throughput chart */}
         <Card className="p-4">
           <div className="mb-3 flex items-center justify-between">

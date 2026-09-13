@@ -192,10 +192,26 @@ class Dispatcher:
                 log.warning("reap tick failed: %s", e)
             await asyncio.sleep(2)
 
+    INFLIGHT_TTL_MS = 20 * 60 * 1000  # 20 min — hard cap on any single job
+
     async def _reap_tick(self) -> None:
-        """Rescue dead-worker queues + drain fallback into the healthiest worker."""
+        """Rescue dead-worker queues + drain fallback + expire stale inflight."""
         r = await self._r()
         live = {w.name for w in await self.get_workers() if w.is_ready}
+
+        # 0) Expire inflight members older than TTL (lost completion / zombie entries)
+        now_ms = int(time.time() * 1000)
+        for ihk_b in await r.keys(INFLIGHT_PREFIX + "*"):
+            ihk = ihk_b.decode() if isinstance(ihk_b, bytes) else ihk_b
+            for jid_b, ts_b in (await r.hgetall(ihk)).items():
+                jid = jid_b.decode() if isinstance(jid_b, bytes) else jid_b
+                ts_s = ts_b.decode() if isinstance(ts_b, bytes) else ts_b
+                try:
+                    ts_val = int(ts_s)
+                except (TypeError, ValueError):
+                    ts_val = 0
+                if now_ms - ts_val > self.INFLIGHT_TTL_MS:
+                    await r.hdel(ihk, jid)
 
         # 1) Any queue whose worker is no longer ready → move all jobs to fallback
         # (skip non-zset keys like arq:q:<name>:health-check via type check)

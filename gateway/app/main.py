@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 import uuid
@@ -857,11 +858,59 @@ async def admin_monitor_full(
     } for t in recent]
 
     qdepth = 0
+    dispatch_view: dict = {"workers": [], "stats": {}, "fallback_depth": 0}
     try:
         import redis.asyncio as _redis
         r = _redis.from_url(get_settings().REDIS_URL, decode_responses=True)
         for qk in await r.keys("arq:q:*"):
-            qdepth += int(await r.zcard(qk))  # type: ignore
+            try:
+                qdepth += int(await r.zcard(qk))  # type: ignore
+            except Exception:
+                pass
+        # ---- dispatcher live view: per-worker dedicated queue depth + inflight ----
+        from app.dispatch import REGISTRY_KEY, STATS_KEY, FALLBACK_QUEUE, INFLIGHT_PREFIX
+        # registry of live workers (name -> info)
+        reg = {}
+        for name, blob in (await r.hgetall(REGISTRY_KEY)).items():
+            try:
+                reg[name] = json.loads(blob)
+            except Exception:
+                pass
+        # explicit fix: keys() may return str already (decode_responses=True)
+        dworkers = []
+        for wname in sorted(reg):
+            queue_key = f"arq:q:{wname}"
+            try:
+                depth = int(await r.zcard(queue_key))
+            except Exception:
+                depth = 0
+            try:
+                inflight = int(await r.hlen(INFLIGHT_PREFIX + wname))
+            except Exception:
+                inflight = 0
+            info = reg[wname] or {}
+            t = await r.type(queue_key)
+            if isinstance(t, bytes):
+                t = t.decode()
+            if t == "zset" or depth == 0:
+                dworkers.append({
+                    "name": wname,
+                    "status": info.get("status", "ready"),
+                    "concurrency": int(info.get("concurrency", 4)),
+                    "queue_depth": depth,
+                    "inflight": inflight,
+                    "load": depth + inflight,
+                })
+        dstats = {k: int(v) for k, v in (await r.hgetall(STATS_KEY)).items()}
+        try:
+            fb_depth = int(await r.zcard(FALLBACK_QUEUE))
+        except Exception:
+            fb_depth = 0
+        dispatch_view = {
+            "workers": dworkers,
+            "stats": dstats,
+            "fallback_depth": fb_depth,
+        }
         await r.aclose()
     except Exception:
         pass
@@ -874,6 +923,7 @@ async def admin_monitor_full(
         "per_worker": [{"name": k, **v} for k, v in sorted(per_worker.items())],
         "series_15min": series,
         "recent": feed,
+        "dispatcher": dispatch_view,
         "ts": now.isoformat(),
     }
 
