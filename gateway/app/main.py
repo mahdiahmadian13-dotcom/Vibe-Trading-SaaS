@@ -257,6 +257,7 @@ class RegisterRequest(BaseModel):
     phone: str | None = None
     device_id: str | None = None
     telegram_id: int | None = None
+    tg_init_data: str | None = None   # signed initData — required when telegram_id is sent
 
 
 class LoginRequest(BaseModel):
@@ -276,67 +277,15 @@ class TokenResponse(BaseModel):
 async def register(req: RegisterRequest, request: Request, db: AsyncSession = Depends(get_db)):
     settings = get_settings()
 
-    # Check existing username
-    existing = await db.execute(select(User).where(User.username == req.username))
-    if existing.scalar_one_or_none():
-        raise HTTPException(400, "نام کاربری قبلاً استفاده شده")
-
-    # Check existing telegram_id
-    if req.telegram_id:
-        existing_tg = await db.execute(select(User).where(User.telegram_id == req.telegram_id))
-        if existing_tg.scalar_one_or_none():
-            raise HTTPException(400, "این تلگرام قبلاً ثبت‌نام شده")
-
-    # Anti-abuse: device fingerprint
-    if req.device_id and settings.MAX_ACCOUNTS_PER_DEVICE > 0:
-        count = await db.execute(
-            select(func.count()).where(User.device_id == req.device_id)
-        )
-        if count.scalar() >= settings.MAX_ACCOUNTS_PER_DEVICE:
-            raise HTTPException(429, "این دستگاه قبلاً ثبت‌نام شده است. هر دستگاه فقط می‌تواند یک حساب داشته باشد.")
-
-    # Create user
-    user = User(
-        username=req.username,
-        hashed_password=hash_password(req.password),
-        phone=req.phone,
-        device_id=req.device_id,
-        telegram_id=req.telegram_id,
-    )
-    db.add(user)
-    await db.flush()
-
-    # Auto-create FREE subscription
-    sub = Subscription(
-        user_id=user.id,
-        plan_tier=PlanTier.FREE,
-        status=SubscriptionStatus.ACTIVE,
-        expires_at=_utcnow() + timedelta(days=365 * 10),
-    )
-    db.add(sub)
-    await db.flush()
-
-    # Welcome pack: 3 free backtest coupons (never expire).
-    # ensure_welcome commits internally → capture id first (attribute access
-    # after commit would trigger a lazy refresh outside greenlet context),
-    # then re-fetch a fresh instance for the rest of the flow.
-    _uid = user.id
-    await coupons_mod.ensure_welcome(db, _uid)
-    user = (await db.execute(select(User).where(User.id == _uid))).scalar_one()
-
-    token = create_access_token({"sub": user.id, "username": user.username})
-    try:
-        _ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
-        _ua = request.headers.get("user-agent", "")[:500]
-        db.add(LoginLog(user_id=user.id, ip=_ip, user_agent=_ua))
-        await db.commit()
-    except Exception:
-        await db.rollback()
-    return TokenResponse(
-        access_token=token,
-        user_id=user.id,
-        username=user.username,
-        plan=user.current_plan.value,
+    # ---- Single-account policy (2026-09): registration is Telegram-only ----
+    # The public web app auto-creates accounts via POST /api/v1/auth/telegram with
+    # a signed initData payload. This legacy endpoint no longer mints accounts
+    # on its own — it only attaches a verified Telegram identity, or lets an
+    # ADMIN mint users (admin has its own guarded endpoint). Unauthenticated
+    # browser sign-ups are closed to stop free-coupon farming.
+    raise HTTPException(
+        403,
+        "ثبت‌نام فقط از داخل ربات تلگرام انجام می‌شود — ربات را باز کنید و «ورود به پلتفرم» را بزنید",
     )
 
 

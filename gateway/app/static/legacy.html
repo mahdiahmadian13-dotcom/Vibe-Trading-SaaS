@@ -454,7 +454,6 @@ input,textarea { font-family:inherit; }
     </div>
     <div class="tabs">
       <button id="tab-login" class="active" onclick="switchTab('login')">ورود</button>
-      <button id="tab-register" onclick="switchTab('register')">ثبت‌نام</button>
     </div>
 
     <div id="form-login">
@@ -467,22 +466,11 @@ input,textarea { font-family:inherit; }
         <input id="li-pass" type="password" placeholder="••••••••" autocomplete="current-password">
       </div>
       <button class="btn-main" id="btn-login" onclick="doLogin()">ورود به داشبورد</button>
-    </div>
-
-    <div id="form-register" style="display:none">
-      <div class="field">
-        <label>نام کاربری</label>
-        <input id="rg-user" type="text" placeholder="username">
-      </div>
-      <div class="field">
-        <label>رمز عبور (حداقل ۶ کاراکتر)</label>
-        <input id="rg-pass" type="password" placeholder="••••••••">
-      </div>
-      <div class="field">
-        <label>شناسه تلگرام (اختیاری — برای اتصال به ربات)</label>
-        <input id="rg-tg" type="text" placeholder="مثلاً 284531640" dir="ltr">
-      </div>
-      <button class="btn-main" id="btn-register" onclick="doRegister()">ساخت حساب</button>
+      <p style="margin-top:14px;font-size:12px;color:var(--muted);line-height:1.9;text-align:center">
+        📲 حساب جدید؟ فقط از داخل ربات تلگرام:<br>
+        <b>@VibeTradingAIbot</b> → «🚀 ورود به پلتفرم»<br>
+        ثبت‌نام با یک ضربه و بدون رمز انجام می‌شود.
+      </p>
     </div>
 
     <div class="msg" id="auth-msg"></div>
@@ -628,9 +616,7 @@ const fmtCls = v => v >= 0 ? 'ret-pos' : 'ret-neg';
 // ---------- auth ----------
 function switchTab(t) {
   $('tab-login').classList.toggle('active', t === 'login');
-  $('tab-register').classList.toggle('active', t === 'register');
   $('form-login').style.display = t === 'login' ? '' : 'none';
-  $('form-register').style.display = t === 'register' ? '' : 'none';
   $('auth-msg').className = 'msg';
 }
 function authMsg(text, cls) { const m = $('auth-msg'); m.textContent = text; m.className = 'msg ' + cls; }
@@ -646,21 +632,6 @@ async function doLogin() {
     enterApp();
   } catch (e) { authMsg(e.status === 401 ? 'نام کاربری یا رمز اشتباه است' : e.message, 'error'); }
   $('btn-login').disabled = false;
-}
-
-async function doRegister() {
-  const u = $('rg-user').value.trim(), p = $('rg-pass').value, tg = $('rg-tg').value.trim();
-  if (!u || p.length < 6) return authMsg('نام کاربری و رمز (۶+ کاراکتر) لازم است', 'error');
-  $('btn-register').disabled = true;
-  try {
-    const body = {username: u, password: p};
-    if (tg && /^\d+$/.test(tg)) body.telegram_id = parseInt(tg);
-    const r = await api('/api/v1/auth/register', {method:'POST', body: JSON.stringify(body)});
-    TOKEN = r.access_token; USERNAME = r.username;
-    localStorage.setItem('vt_token', TOKEN); localStorage.setItem('vt_username', USERNAME);
-    enterApp();
-  } catch (e) { authMsg(e.message, 'error'); }
-  $('btn-register').disabled = false;
 }
 
 function logout() {
