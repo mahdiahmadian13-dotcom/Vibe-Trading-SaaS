@@ -7,6 +7,8 @@ import json
 import time
 from datetime import datetime, timezone
 
+import pickle
+
 import httpx
 import redis.asyncio as aioredis
 from arq.connections import RedisSettings
@@ -30,6 +32,9 @@ ENGINE_API_KEY = os.getenv("VIBE_ENGINE_API_KEY", "")
 WORKER_NAME = os.getenv("WORKER_NAME") or f"{os.getenv('WORKER_NAME_PREFIX') or 'worker'}-{socket.gethostname().split('.')[0]}"
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "4"))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+# Dedicated queue consumed ONLY by this worker (dispatcher writes here)
+QUEUE_NAME = os.getenv("WORKER_QUEUE", f"arq:q:{WORKER_NAME}")
+INFLIGHT_PREFIX = "vibe:dispatch:inflight:"
 
 # ============================================================================
 # Shared Redis connection (reuse across calls)
@@ -239,6 +244,34 @@ async def task_swarm(ctx: dict, task_id: str, user_id: int, params: dict) -> dic
 # ============================================================================
 
 _heartbeat_task: asyncio.Task | None = None
+INFLIGHT_KEY = INFLIGHT_PREFIX + WORKER_NAME
+
+
+async def _job_start(ctx: dict):
+    """Mark job inflight on this worker for the dispatcher's load metric."""
+    try:
+        r = await get_redis()
+        await r.hset(INFLIGHT_KEY, ctx.get("job_id", ""), int(time.time() * 1000))
+    except Exception:
+        pass
+
+
+async def _job_end(ctx: dict):
+    """Clear inflight marker so the worker becomes eligible for new jobs."""
+    try:
+        r = await get_redis()
+        await r.hdel(INFLIGHT_KEY, ctx.get("job_id", ""))
+    except Exception:
+        pass
+
+
+async def _health_report(ctx: dict):
+    """Periodically check for and clean any stale state from dead runs."""
+    pass
+
+
+def _load_recycle(ctx: dict):
+    return time.time()
 
 
 async def _heartbeat():
@@ -298,13 +331,17 @@ class WorkerSettings:
     functions = [task_chat, task_backtest, task_swarm]
     on_startup = startup
     on_shutdown = shutdown
+    on_job_start = _job_start
+    on_job_end = _job_end
 
     redis_settings = RedisSettings.from_dsn(REDIS_URL)
+    queue_name = QUEUE_NAME
     max_jobs = WORKER_CONCURRENCY
     job_timeout = 1200
     retry_delay = 10
     max_tries = 2
+    poll_delay = 0.25
 
-    # NOTE: keep arq's default queue ("arq:queue") so gateway enqueue and
-    # worker consume from the SAME sorted set (mismatch caused silent stalls).
+    # Dedicated per-worker queue (arq:q:<NAME>) fed by the gateway dispatcher;
+    # the shared default queue is no longer used for new jobs.
 

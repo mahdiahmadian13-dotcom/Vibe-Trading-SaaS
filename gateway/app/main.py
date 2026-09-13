@@ -199,8 +199,13 @@ async def lifespan(app: FastAPI):
             ))
             await sdb.commit()
 
+    # Smart task dispatcher (least-loaded routing + reaper)
+    from app.dispatch import start_dispatcher, stop_dispatcher
+    await start_dispatcher()
+
     start_background_loops()
     yield
+    await stop_dispatcher()
     await stop_background_loops()
 
 
@@ -599,14 +604,19 @@ async def create_task(
 
     await db.commit()
 
-    # Enqueue to ARQ worker
-    from shared.queue import enqueue
-    job = await enqueue(
+    # Smart dispatch: route to the least-loaded ready worker's dedicated
+    # queue, honoring the user's plan tier for priority.
+    from app.dispatch import get_dispatcher
+    plan = getattr(user, "plan_tier", None) or "free"
+    routing = await get_dispatcher().dispatch(
         f"task_{req.task_type}",
-        task_id, user.id, req.params
+        (task_id, user.id, req.params),
+        plan=plan,
+        priority=getattr(user, "is_admin", False) and 1 or 0,
     )
 
-    return {"task_id": task_id, "status": "pending", "arq_job_id": job.job_id if job else None}
+    return {"task_id": task_id, "status": "pending", "arq_job_id": routing["job_id"],
+            "worker": routing["worker"], "queue": routing["queue"]}
 
 
 @app.get("/api/v1/tasks/{task_id}")
@@ -627,6 +637,7 @@ async def get_task_status(
         "task_id": task.task_id,
         "task_type": task.task_type,
         "status": task.status.value,
+        "worker": task.worker_name,
         "progress": task.progress,
         "result": task.result,
         "error": task.error_message,
@@ -724,7 +735,9 @@ async def admin_monitor_summary(
         import redis.asyncio as _redis
         settings = get_settings()
         r = _redis.from_url(settings.REDIS_URL, decode_responses=True)
-        qdepth = await r.zcard("arq:queue")  # type: ignore
+        import redis.asyncio as _r2
+        keys = await _r2.from_url(settings.REDIS_URL, decode_responses=True).keys("arq:q:*")
+        qdepth = sum(await r.zcard(k) for k in keys) if keys else 0  # type: ignore
         await r.aclose()
     except Exception:
         pass
@@ -843,11 +856,12 @@ async def admin_monitor_full(
         "error": (t.error_message or "")[:120] or None,
     } for t in recent]
 
-    qdepth = None
+    qdepth = 0
     try:
         import redis.asyncio as _redis
         r = _redis.from_url(get_settings().REDIS_URL, decode_responses=True)
-        qdepth = await r.zcard("arq:queue")  # type: ignore
+        for qk in await r.keys("arq:q:*"):
+            qdepth += int(await r.zcard(qk))  # type: ignore
         await r.aclose()
     except Exception:
         pass
