@@ -22,10 +22,13 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from shared.config import get_settings
+import hashlib
+import hmac as _hmac
+
 from shared.models import (
     init_db, get_db, User, Subscription, Task, VibeSession,
     UsageLog, SwarmRun, PlanTier, SubscriptionStatus, TaskStatus, _utcnow,
-    EngineNode, WorkerNode, Payment, SettingKV, LoginLog, ServerNode
+    EngineNode, WorkerNode, Payment, SettingKV, LoginLog, ServerNode, Referral
 )
 
 from app import coupons as coupons_mod
@@ -358,6 +361,188 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
         username=user.username,
         plan=user.current_plan.value,
     )
+
+
+# ============================================================================
+# Telegram WebApp Auth (initData HMAC-SHA256 validation, per Telegram spec)
+# ============================================================================
+
+class TelegramAuthRequest(BaseModel):
+    init_data: str
+    ref_code: str | None = None
+    start_param: str | None = None  # t.me/bot?start=<code> — bot forwards it
+
+
+def _verify_init_data(init_data: str, bot_token: str, max_age_s: int = 86400) -> dict | None:
+    """Validate Telegram WebApp initData signature (HMAC-SHA256 over sorted kv)."""
+    try:
+        from urllib.parse import unquote, parse_qsl
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        received_hash = pairs.pop("hash", "")
+        if not received_hash:
+            return None
+        data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret_key = _hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
+        calc = _hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(calc, received_hash):
+            return None
+        # freshness: auth_date within 24h
+        auth_date = int(pairs.get("auth_date", "0"))
+        if auth_date and (time.time() - auth_date) > max_age_s:
+            return None
+        import json as _json
+        if "user" in pairs:
+            pairs["user"] = _json.loads(pairs["user"])
+        return pairs
+    except Exception:
+        return None
+
+
+def _gen_ref_code(user_id: int) -> str:
+    """Short unique referral code: base36 of uid + 4 random chars (unique-retry upstream)."""
+    import random as _rnd
+    import string as _string
+    digits = _string.digits + _string.ascii_lowercase
+    b36 = ""
+    n = user_id
+    while n:
+        n, r = divmod(n, 36)
+        b36 = digits[r] + b36
+    suffix = "".join(_rnd.choices("abcdefghjkmnpqrstuvwxyz23456789", k=4))
+    return f"{b36 or '0'}{suffix}"[:16]
+
+
+@app.post("/api/v1/auth/telegram", response_model=TokenResponse)
+async def auth_telegram(req: TelegramAuthRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """One-tap login for the Telegram WebApp: validate initData, find-or-create user."""
+    settings = get_settings()
+    bot_token = settings.TELEGRAM_BOT_TOKEN
+    if not bot_token:
+        raise HTTPException(500, "ورود تلگرامی روی سرور پیکربندی نشده")
+
+    data = _verify_init_data(req.init_data, bot_token)
+    if not data or "user" not in data:
+        raise HTTPException(401, "اعتبارنامه تلگرام نامعتبر است — دوباره از ربات باز کن")
+
+    tg_user = data["user"]
+    tg_id = int(tg_user.get("id", 0))
+    if not tg_id:
+        raise HTTPException(401, "کاربر تلگرام شناسایی نشد")
+    display = (tg_user.get("first_name") or "").strip() or f"tg{tg_id}"
+
+    # find-or-create by telegram_id
+    res = await db.execute(select(User).where(User.telegram_id == tg_id))
+    user = res.scalar_one_or_none()
+
+    created = False
+    if user is None:
+        # unique username from tg id; password random (never used — auth via initData)
+        username = f"tg{tg_id}"
+        _dupe = await db.execute(select(User).where(User.username == username))
+        if _dupe.scalar_one_or_none():
+            username = f"tg{tg_id}_{secrets.token_hex(2)}"
+        user = User(
+            username=username,
+            hashed_password=hash_password(secrets.token_hex(16)),
+            telegram_id=tg_id,
+            telegram_name=display[:128],
+            device_id=f"tg:{tg_id}",
+        )
+        db.add(user)
+        await db.flush()
+        db.add(Subscription(user_id=user.id, plan_tier=PlanTier.FREE,
+                            status=SubscriptionStatus.ACTIVE,
+                            expires_at=_utcnow() + timedelta(days=365 * 10)))
+        await db.flush()
+        created = True
+
+    # referral attribution: only on first creation, not self-referral
+    ref_code = (req.start_param or req.ref_code or "").strip()[:16]
+    referral_done = False
+    if created and ref_code:
+        res_r = await db.execute(select(User).where(User.ref_code == ref_code))
+        referrer = res_r.scalar_one_or_none()
+        if referrer and referrer.id != user.id:
+            try:
+                db.add(Referral(referrer_id=referrer.id, invited_user_id=user.id,
+                                invited_telegram_id=tg_id, invited_username=user.username,
+                                reward_granted=True))
+                await db.flush()
+                referral_done = True
+            except Exception:
+                await db.rollback()
+                # re-anchor user in this session after rollback
+                user = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
+    # grant the referrer reward AFTER the user row is safely committed —
+    # grant_bonus commits internally and would expire this session's objects
+    if referral_done:
+        await coupons_mod.grant_bonus(db, referrer.id, 2, reason=f"referral:{user.id}")
+
+    # keep display name fresh + ensure ref_code exists
+    if not user.ref_code:
+        user.ref_code = _gen_ref_code(user.id)
+        try:
+            await db.flush()
+        except Exception:
+            await db.rollback()
+            await db.refresh(user)
+
+    # welcome pack for brand-new users (no-ops if already granted)
+    if created:
+        await coupons_mod.ensure_welcome(db, user.id)
+        user = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
+
+    token = create_access_token({"sub": user.id, "username": user.username})
+    try:
+        _ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+        _ua = request.headers.get("user-agent", "")[:500]
+        db.add(LoginLog(user_id=user.id, ip=_ip, user_agent=_ua))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+    return TokenResponse(
+        access_token=token,
+        user_id=user.id,
+        username=user.username,
+        plan=user.current_plan.value,
+    )
+
+
+@app.get("/api/v1/referrals/me", response_model=None)
+async def my_referrals(
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Referral wallet: my code, link, invited count, reward coupons."""
+    # NOTE: the require_auth `user` belongs to a closed nested session —
+    # re-fetch inside THIS session so writes actually persist.
+    me = (await db.execute(select(User).where(User.id == user.id))).scalar_one()
+    if not me.ref_code:
+        me.ref_code = _gen_ref_code(me.id)
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            await db.refresh(me)
+    count = await db.execute(
+        select(func.count()).select_from(Referral).where(Referral.referrer_id == me.id)
+    )
+    total = count.scalar() or 0
+    rewarded = await db.execute(
+        select(func.count()).select_from(Referral).where(
+            (Referral.referrer_id == me.id) & (Referral.reward_granted.is_(True))
+        )
+    )
+    settings = get_settings()
+    base = (settings.PUBLIC_BASE_URL or "").rstrip("/")
+    link = f"{base}/app/" if base else "/app/"
+    return {
+        "ref_code": me.ref_code,
+        "tg_link": f"https://t.me/{settings.TELEGRAM_BOT_USERNAME}?start={me.ref_code}" if settings.TELEGRAM_BOT_USERNAME else None,
+        "link": link,
+        "invited": total,
+        "reward_coupons": (rewarded.scalar() or 0) * 2,
+    }
 
 
 # ============================================================================

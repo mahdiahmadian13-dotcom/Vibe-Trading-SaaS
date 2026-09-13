@@ -8,17 +8,22 @@ import ChatPage from "@/pages/ChatPage";
 import ReportsPage from "@/pages/ReportsPage";
 import DiscoveryPage from "@/pages/DiscoveryPage";
 import AdminPage from "@/pages/AdminPage";
-import { auth } from "@/api/client";
+import { auth, telegramAutoLogin } from "@/api/client";
 import "@/index.css";
 
 function App() {
+  const [booting, setBooting] = useState(true);
   const [view, setView] = useState(() => {
     const h = location.hash;
     return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : h === "#discovery" ? "discovery" : h === "#admin" ? "admin" : "home";
   });
 
+  // Telegram WebApp one-tap login, then fall back to legacy login page
   useEffect(() => {
-    if (!auth.token) location.href = "/app/legacy.html";
+    telegramAutoLogin().finally(() => {
+      setBooting(false);
+      if (!auth.token) location.href = "/app/legacy.html";
+    });
   }, []);
 
   useEffect(() => {
@@ -36,6 +41,17 @@ function App() {
   const goDiscovery = () => { location.hash = "#discovery"; setView("discovery"); };
   const goAdmin = () => { location.hash = "#admin"; setView("admin"); };
   const goHome = () => { if (location.hash) location.hash = ""; setView("home"); };
+
+  if (booting) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-bg">
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-brand border-t-transparent" />
+          <div className="text-[13px] font-bold text-muted">در حال اتصال به حساب…</div>
+        </div>
+      </div>
+    );
+  }
 
   return view === "swarm" ? (
     <>

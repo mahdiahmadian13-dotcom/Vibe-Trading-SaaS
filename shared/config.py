@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_ALLOWED_USERS: str = ""  # comma-separated user IDs
+    TELEGRAM_BOT_USERNAME: str = ""  # without @ — for referral deep-links
+    TELEGRAM_CHANNEL_URL: str = ""   # e.g. https://t.me/yourchannel
 
     # --- Fleet (multi-server) ---
     FLEET_HEALTH_INTERVAL: int = 30

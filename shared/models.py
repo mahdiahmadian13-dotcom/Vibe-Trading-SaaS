@@ -64,6 +64,8 @@ class User(Base):
     language = Column(String(10), default="fa")
     device_id = Column(String(128), nullable=True, index=True)
     telegram_id = Column(Integer, unique=True, nullable=True, index=True)
+    ref_code = Column(String(16), unique=True, nullable=True, index=True)  # referral short code
+    telegram_name = Column(String(128), nullable=True)  # display name from WebApp initData
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
@@ -259,6 +261,23 @@ class LoginLog(Base):
     __table_args__ = (
         Index("ix_login_logs_user_time", "user_id", "created_at"),
     )
+
+
+class Referral(Base):
+    """Referral program — one row per (referrer, invited) pair.
+    ref_code on User is the shareable short code; this table tracks conversions."""
+    __tablename__ = "referrals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    referrer_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    invited_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    invited_telegram_id = Column(Integer, nullable=True, index=True)
+    invited_username = Column(String(128), nullable=True)
+    reward_granted = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+    referrer = relationship("User", foreign_keys=[referrer_id], lazy="joined")
+    invited = relationship("User", foreign_keys=[invited_user_id], lazy="joined")
 
 class ServerNode(Base):
     """A customer-controlled server joined to this SaaS control plane.

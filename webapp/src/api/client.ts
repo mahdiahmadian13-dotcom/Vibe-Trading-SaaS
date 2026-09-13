@@ -59,6 +59,65 @@ export async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
+/* ---------------------------------------------------------------------------
+ * Telegram WebApp auto-login (bridge to /api/v1/auth/telegram)
+ * ------------------------------------------------------------------------ */
+
+type TelegramWebApp = {
+  initData?: string;
+  initDataUnsafe?: { start_param?: string; user?: { id: number } };
+  ready?: () => void;
+  expand?: () => void;
+  HapticFeedback?: { impactOccurred?: (s: string) => void };
+};
+
+declare global {
+  interface Window { Telegram?: { WebApp?: TelegramWebApp } }
+}
+
+/** Extract ?ref=… / start_param from URL or Telegram deep-link payload. */
+function tgStartParam(): string | null {
+  try {
+    const q = new URLSearchParams(location.search);
+    const ref = q.get("ref") || q.get("tgWebAppStartParam");
+    if (ref) return ref;
+    const sp = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
+    return sp || null;
+  } catch { return null; }
+}
+
+/** If running inside the Telegram WebApp, mint a JWT from initData. */
+export async function telegramAutoLogin(): Promise<boolean> {
+  const tg = window.Telegram?.WebApp;
+  if (!tg?.initData || auth.token) {
+    if (tg?.ready) tg.ready();
+    if (tg?.expand) tg.expand();
+    return false;
+  }
+  try {
+    const body: Record<string, string> = { init_data: tg.initData };
+    const sp = tgStartParam();
+    if (sp) body.start_param = sp;
+    const r = await fetch("/api/v1/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) return false;
+    const data = await r.json();
+    if (data?.access_token) {
+      auth.set(data.username || "کاربر تلگرام", data.access_token);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    if (tg?.ready) tg.ready();
+    if (tg?.expand) tg.expand();
+  }
+}
+
 export const getRuns = () => api<RunRow[]>("/api/v1/vibe/runs");
 export const getRun = (id: string) => api<RunDetail>(`/api/v1/vibe/runs/${id}`);
 export const getSessions = () => api<SessionRow[]>("/api/v1/vibe/sessions");

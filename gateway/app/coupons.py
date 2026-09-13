@@ -11,6 +11,8 @@ All grants/claims are race-safe via the grant_key unique constraint.
 
 from __future__ import annotations
 
+import secrets
+
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -81,6 +83,20 @@ async def ensure_welcome(db: AsyncSession, user_id: int) -> None:
     for i in range(WELCOME_BACKTEST_COUPONS):
         db.add(Coupon(user_id=user_id, kind="backtest", source="welcome",
                       grant_key=f"welcome:bt:{i + 1}"))
+    try:
+        await db.flush()
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+
+
+async def grant_bonus(db: AsyncSession, user_id: int, count: int = 1, reason: str = "") -> None:
+    """Grant N non-expiring backtest coupons (referral reward etc.)."""
+    for i in range(count):
+        db.add(Coupon(
+            user_id=user_id, kind="backtest", source="bonus",
+            grant_key=f"bonus:{reason}:{user_id}:{secrets.token_hex(6)}",
+        ))
     try:
         await db.flush()
         await db.commit()
