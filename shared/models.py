@@ -233,6 +233,36 @@ class LoginLog(Base):
         Index("ix_login_logs_user_time", "user_id", "created_at"),
     )
 
+class ServerNode(Base):
+    """A customer-controlled server joined to this SaaS control plane.
+
+    One row per physical/VPS server. The node agent (installed via the
+    one-line installer) authenticates with a per-server join token, reports
+    heartbeats + worker status, and receives desired_state (worker count)
+    which the agent applies locally via `docker compose --scale`.
+    """
+
+    __tablename__ = "server_nodes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(128), unique=True, nullable=False, index=True)
+    join_token = Column(String(128), unique=True, nullable=False, index=True)
+    region = Column(String(64), nullable=True)
+    # desired state (admin sets from panel; agent reconciles)
+    desired_workers = Column(Integer, default=1)
+    worker_concurrency = Column(Integer, default=4)   # per-worker max_jobs
+    cpu_limit = Column(String(16), default="2.0")
+    mem_limit = Column(String(16), default="2G")
+    # observed state (agent reports)
+    status = Column(String(32), default="pending")     # pending|online|offline|decommissioned
+    observed_workers = Column(Integer, default=0)
+    docker_ok = Column(Boolean, default=False)
+    host_info = Column(JSON, nullable=True)            # {cpu, mem, docker_ver, ...}
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class SettingKV(Base):
     """Simple key-value store for runtime settings (plan prices, etc.)."""
     __tablename__ = "setting_kv"

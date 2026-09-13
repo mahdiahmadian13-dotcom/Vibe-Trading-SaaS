@@ -27,7 +27,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 ENGINE_URL = os.getenv("VIBE_ENGINE_URL", "http://engine:8899")
 ENGINE_API_KEY = os.getenv("VIBE_ENGINE_API_KEY", "")
 # Unique per container (docker --scale replicas get distinct hostnames)
-WORKER_NAME = os.getenv("WORKER_NAME") or f"worker-{socket.gethostname().split('.')[0]}"
+WORKER_NAME = os.getenv("WORKER_NAME") or f"{os.getenv('WORKER_NAME_PREFIX') or 'worker'}-{socket.gethostname().split('.')[0]}"
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "4"))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 

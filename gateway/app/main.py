@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -10,8 +11,8 @@ from datetime import timedelta
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +24,7 @@ from shared.config import get_settings
 from shared.models import (
     init_db, get_db, User, Subscription, Task, VibeSession,
     UsageLog, SwarmRun, PlanTier, SubscriptionStatus, TaskStatus, _utcnow,
-    EngineNode, WorkerNode, Payment, SettingKV, LoginLog
+    EngineNode, WorkerNode, Payment, SettingKV, LoginLog, ServerNode
 )
 from app.fleet import EnginePool, get_engine_pool, start_background_loops, stop_background_loops
 from shared.security import (
@@ -1179,6 +1180,208 @@ async def session_history(
 # ============================================================================
 # Web App (static dashboard + report chart/PDF)
 # ============================================================================
+
+
+# ============================================================================
+# Server Fleet — one-line join + panel-controlled worker scaling
+# ============================================================================
+
+class ServerNodeIn(BaseModel):
+    name: str
+    region: str | None = None
+    desired_workers: int = 1
+    worker_concurrency: int = 4
+    cpu_limit: str = "2.0"
+    mem_limit: str = "2G"
+
+
+@app.get("/api/v1/admin/servers")
+async def admin_list_servers(admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(ServerNode).order_by(ServerNode.id))).scalars().all()
+    out = []
+    for s in rows:
+        workers = (await db.execute(select(WorkerNode).where(WorkerNode.name.ilike(f"{s.name}-%")))).scalars().all()
+        online = [w for w in workers if w.status == "ready"]
+        out.append({
+            "id": s.id, "name": s.name, "region": s.region,
+            "join_token": s.join_token,
+            "desired_workers": s.desired_workers,
+            "worker_concurrency": s.worker_concurrency,
+            "cpu_limit": s.cpu_limit, "mem_limit": s.mem_limit,
+            "status": s.status,
+            "observed_workers": s.observed_workers,
+            "online_workers": len(online),
+            "worker_names": sorted(w.name for w in online),
+            "docker_ok": s.docker_ok,
+            "host_info": s.host_info,
+            "last_heartbeat_at": s.last_heartbeat_at.isoformat() if s.last_heartbeat_at else None,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        })
+    return out
+
+
+@app.post("/api/v1/admin/servers")
+async def admin_create_server(req: ServerNodeIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    if (await db.execute(select(ServerNode).where(ServerNode.name == req.name))).scalar_one_or_none():
+        raise HTTPException(400, "نام سرور تکراری است")
+    s = ServerNode(
+        name=req.name, region=req.region,
+        join_token=secrets.token_urlsafe(24),
+        desired_workers=req.desired_workers,
+        worker_concurrency=req.worker_concurrency,
+        cpu_limit=req.cpu_limit, mem_limit=req.mem_limit,
+    )
+    db.add(s)
+    await db.commit()
+    await db.refresh(s)
+    return {"id": s.id, "name": s.name, "join_token": s.join_token}
+
+
+@app.delete("/api/v1/admin/servers/{server_id}")
+async def admin_delete_server(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "سرور یافت نشد")
+    s.desired_workers = 0
+    s.status = "decommissioned"
+    await db.commit()
+    await db.delete(s)
+    await db.commit()
+    return {"ok": True}
+
+
+class ServerScale(BaseModel):
+    desired_workers: int = Field(..., ge=0, le=64)
+    worker_concurrency: int | None = Field(None, ge=1, le=64)
+    cpu_limit: str | None = None
+    mem_limit: str | None = None
+
+
+@app.post("/api/v1/admin/servers/{server_id}/scale")
+async def admin_scale_server(server_id: int, req: ServerScale, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """Set desired worker count / per-worker limits — the node agent applies it within ~10s."""
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "سرور یافت نشد")
+    s.desired_workers = req.desired_workers
+    if req.worker_concurrency:
+        s.worker_concurrency = req.worker_concurrency
+    if req.cpu_limit:
+        s.cpu_limit = req.cpu_limit
+    if req.mem_limit:
+        s.mem_limit = req.mem_limit
+    await db.commit()
+    return {"ok": True, "desired_workers": s.desired_workers}
+
+
+@app.get("/install/{token}", response_class=PlainTextResponse)
+async def node_install_script(token: str, db: AsyncSession = Depends(get_db)):
+    """One-line installer served to the new server — token identifies the server row."""
+    s = (await db.execute(select(ServerNode).where(ServerNode.join_token == token))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "توکن نامعتبر است")
+    settings = get_settings()
+    base = settings.PUBLIC_BASE_URL or str(request_url_base())
+    s = f"""#!/usr/bin/env bash
+set -euo pipefail
+# Vibe-Trading SaaS — node bootstrap (token-authenticated)
+# This script: installs docker if missing, downloads the node bundle,
+# writes .env, and starts the node agent + workers.
+export VT_JOIN_TOKEN="{token}"
+export VT_CONTROL_URL="{base}"
+command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sh
+mkdir -p /opt/vibe-node && cd /opt/vibe-node
+curl -fsSL "$VT_CONTROL_URL/api/v1/node/{token}/bundle" -o node.tar.gz
+tar xzf node.tar.gz
+source .env 2>/dev/null || true
+export VT_JOIN_TOKEN="{token}" VT_CONTROL_URL="{base}"
+# start the agent only — it fetches config from the panel and then brings up workers
+docker compose -p vibe-node -f docker-compose.node.yml up -d --build --quiet-pull agent
+echo "Vibe node agent started. Workers will register within ~30s."
+"""
+    return PlainTextResponse(s, media_type="text/x-shellscript")
+
+
+def request_url_base() -> str:
+    # best-effort public base (host header + port); settings override wins
+    return "http://206.245.166.14:9001"
+
+
+@app.get("/api/v1/node/{token}/bundle")
+async def node_bundle(token: str, db: AsyncSession = Depends(get_db)):
+    """Tarball of agent/ + worker/ + shared/ + compose for the joining server."""
+    import io, tarfile
+    from pathlib import Path as _P
+    # repo layout differs local vs docker image: find dir containing docker-compose.node.yml
+    here = _P(__file__).resolve()
+    candidates = [here.parents[2], _P("/app/worker_bundle"), _P("/app"), _P("/repo")]
+    root = next((c for c in candidates if (c / "docker-compose.node.yml").exists()), candidates[0])
+    s = (await db.execute(select(ServerNode).where(ServerNode.join_token == token))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "توکن نامعتبر است")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for sub, names in {
+            "agent": ["app/main.py", "Dockerfile"],
+            "worker": ["Dockerfile"],
+            ".": ["docker-compose.node.yml"],
+        }.items():
+            for n in names:
+                fp = root / sub / n
+                if fp.exists():
+                    tar.add(fp, arcname=f"{sub}/{n}" if sub != "." else n)
+        # worker sources + shared
+        for fp in (root / "worker" / "app").glob("*.py"):
+            tar.add(fp, arcname=f"worker/app/{fp.name}")
+        for fp in (root / "shared").glob("*.py"):
+            tar.add(fp, arcname=f"shared/{fp.name}")
+        # requirements files
+        for f in ("worker/requirements.txt", "agent/requirements.txt"):
+            fp = root / f
+            if fp.exists():
+                tar.add(fp, arcname=f)
+        # .env placeholder — agent rewrites it from control-plane state anyway
+        env = f"VT_JOIN_TOKEN={s.join_token}\nVT_CONTROL_URL={request_url_base()}\nVT_SERVER_NAME={s.name}\n"
+        data = env.encode()
+        ti = tarfile.TarInfo(".env")
+        ti.size = len(data)
+        tar.addfile(ti, io.BytesIO(data))
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/gzip", headers={"Content-Disposition": f'attachment; filename="node.tar.gz"'})
+
+
+@app.get("/api/v1/node/{token}/state")
+async def node_state(token: str, db: AsyncSession = Depends(get_db)):
+    """Agent pulls desired state (worker count + limits) + effective env here."""
+    s = (await db.execute(select(ServerNode).where(ServerNode.join_token == token))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "توکن نامعتبر است")
+    settings = get_settings()
+    return {
+        "server": s.name,
+        "desired_workers": s.desired_workers,
+        "worker_concurrency": s.worker_concurrency,
+        "cpu_limit": s.cpu_limit,
+        "mem_limit": s.mem_limit,
+        "redis_url": settings.REDIS_URL_PUBLIC or settings.REDIS_URL,
+        "database_url": settings.DATABASE_URL_PUBLIC or "",
+        "engine_url": settings.VIBE_ENGINE_URL_PUBLIC or settings.VIBE_ENGINE_URL,
+        "engine_api_key": settings.VIBE_ENGINE_API_KEY if settings.VIBE_NODE_SHARE_ENGINE_KEY else "",
+    }
+
+
+@app.post("/api/v1/node/{token}/heartbeat")
+async def node_heartbeat(token: str, body: dict, db: AsyncSession = Depends(get_db)):
+    s = (await db.execute(select(ServerNode).where(ServerNode.join_token == token))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "توکن نامعتبر است")
+    s.status = "online"
+    s.observed_workers = int(body.get("observed_workers", 0) or 0)
+    s.docker_ok = bool(body.get("docker_ok", False))
+    s.host_info = body.get("host_info") or {}
+    s.last_heartbeat_at = _utcnow()
+    await db.commit()
+    return {"ok": True}
 
 
 # ============================================================================

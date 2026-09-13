@@ -1,0 +1,53 @@
+# ============================================================================
+# Vibe-Trading SaaS — Node (agent + workers) — runs on a JOINED server
+# ============================================================================
+# The agent pulls desired state from the control plane and scales the
+# `worker` service accordingly. Both read their config from .env, which
+# the agent rewrites from control-plane state on every reconcile pass.
+#
+# NOTE: the installer starts ONLY the agent; the agent itself brings up
+# the worker service once .env is populated from control-plane state
+# (avoids worker crash-loops with empty env on first boot).
+# ============================================================================
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    env_file:
+      - .env
+    command: ["python", "/agent/main.py"]
+    volumes:
+      # drive the HOST docker daemon (compose CLI talks to the socket)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # project dir (compose files + .env) — the agent runs compose commands here
+      - ./:/agent-project
+    working_dir: /agent-project
+    restart: always
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=${BROKER_URL}
+      - WORKER_NAME_PREFIX=${VT_SERVER_NAME}
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
+      - WORKER_MAX_TASKS=${WORKER_MAX_TASKS:-100}
+      - VIBE_ENGINE_URL=${ENGINE_URL}
+      - VIBE_ENGINE_API_KEY=${ENGINE_API_KEY:-}
+      - DATABASE_URL=${DATABASE_URL:-}
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "${CPU_LIMIT:-2.0}"
+          memory: "${MEM_LIMIT:-2G}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import redis,os; r=redis.Redis.from_url(os.environ['REDIS_URL']); r.ping()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

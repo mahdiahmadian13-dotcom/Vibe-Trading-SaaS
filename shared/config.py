@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # --- Fleet (multi-server) ---
     FLEET_HEALTH_INTERVAL: int = 30
     FLEET_HEALTH_FAILS: int = 2
+    # Public endpoints for node agents joining from other servers
+    REDIS_URL_PUBLIC: str | None = None      # e.g. redis://206.245.166.14:6379/0
+    DATABASE_URL_PUBLIC: str | None = None   # postgres URL reachable from node servers
+    VIBE_ENGINE_URL_PUBLIC: str | None = None
+    VIBE_NODE_SHARE_ENGINE_KEY: bool = False # share engine key with joined nodes
 
     # --- Worker ---
     WORKER_CONCURRENCY: int = 4

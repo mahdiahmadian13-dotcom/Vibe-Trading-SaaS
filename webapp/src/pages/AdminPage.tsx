@@ -1,11 +1,11 @@
   import { useCallback, useEffect, useRef, useState } from "react";
   import {
     Activity, BadgeCheck, Box, Copy, Eye, EyeOff, HardDrive, LayoutDashboard,
-    LogIn, Monitor, Plus, RefreshCw, Search, Server, Shield, Trash2, Users, Wrench, X,
+    LogIn, Minus, Monitor, Plus, RefreshCw, Search, Server, Shield, Terminal, Trash2, Users, Wrench, X,
   } from "lucide-react";
   import { api } from "@/api/client";
   import * as adminApi from "@/api/admin";
-  import type { AdminOverview, AdminUserRow, EngineRow, MonitorSummary } from "@/api/admin";
+  import type { AdminOverview, AdminUserRow, EngineRow, MonitorSummary, ServerRow } from "@/api/admin";
   import { Button } from "@/components/ui/Button";
   import { Card } from "@/components/ui/primitives";
 
@@ -397,6 +397,11 @@
   function NodesTab({ onToast }: { onToast: (m: string) => void }) {
     const [fleet, setFleet] = useState<EngineRow[] | null>(null);
     const [workers, setWorkers] = useState<import("@/api/admin").WorkerRow[] | null>(null);
+    const [servers, setServers] = useState<ServerRow[] | null>(null);
+    const [scaling, setScaling] = useState<number | null>(null);
+    const [joinOpen, setJoinOpen] = useState(false);
+    const [joinShow, setJoinShow] = useState<ServerRow | null>(null);
+    const [pendingServerDelete, setPendingServerDelete] = useState<number | null>(null);
     const [err, setErr] = useState("");
     const [addOpen, setAddOpen] = useState(false);
     const [editNode, setEditNode] = useState<EngineRow | null>(null);
@@ -405,8 +410,17 @@
     const load = useCallback(() => {
       adminApi.listFleet().then(setFleet).catch((e: Error) => setErr(e.message));
       adminApi.listWorkers().then(setWorkers).catch(() => setWorkers([]));
+      adminApi.listServers().then(setServers).catch(() => setServers([]));
     }, []);
     useEffect(() => { load(); }, [load]);
+
+    const changeScale = async (s: ServerRow, delta: number) => {
+      const target = Math.max(0, s.desired_workers + delta);
+      setScaling(s.id);
+      try { await adminApi.scaleServer(s.id, { desired_workers: target }); onToast(target === 0 ? "ورکرها صفر شدند" : `درخواست شد: ${target} ورکر`); load(); }
+      catch (e) { onToast((e as Error).message); }
+      finally { setScaling(null); }
+    };
 
     const copySnippet = async () => {
       const snippet = `BROKER_URL=redis://CENTRAL_IP:6379 \
@@ -422,6 +436,48 @@ docker compose -f docker-compose.worker.yml up -d --build`;
     return (
       <div className="space-y-4">
         {err && <Card className="p-3 text-sm text-red-300">{err}</Card>}
+
+        <Card className="p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-sm font-black"><Terminal size={14} className="text-brand" /> سرورها (Servers)</h3>
+            <div className="flex gap-2">
+              <Button onClick={() => setJoinOpen(true)} className="gap-1.5"><Plus size={14} /> افزودن سرور</Button>
+              <Button variant="ghost" onClick={load}><RefreshCw size={14} /></Button>
+            </div>
+          </div>
+          {!servers ? <p className="text-xs text-muted">در حال بارگذاری…</p> : servers.length === 0 ? <p className="text-xs text-muted">سروری اضافه نشده — با «افزودن سرور» یک دستور یک‌خطی بگیرید.</p> : (
+            <div className="overflow-auto">
+              <table className="w-full min-w-[820px] text-xs">
+                <thead className="bg-white/[.04] text-[11px] text-muted"><tr><th className="px-3 py-2 text-right">سرور</th><th className="px-3 py-2 text-right">وضعیت</th><th className="px-3 py-2 text-right">ورکر</th><th className="px-3 py-2 text-right">منابع</th><th className="px-3 py-2 text-right">heartbeat</th><th className="px-3 py-2 text-right">عملیات</th></tr></thead>
+                <tbody>
+                  {servers.map((s) => (
+                    <tr key={s.id} className="border-t border-white/5">
+                      <td className="px-3 py-2.5"><span className="font-bold">{s.name}</span>{s.region && <span className="mr-1.5 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">{s.region}</span>}<div className="text-[10px] text-muted">{s.host_info?.hostname ?? "—"} · {s.host_info?.cpu_count ?? "?"}vCPU · {s.host_info?.mem_total_gb ?? "?"}GB</div></td>
+                      <td className="px-3 py-2.5"><span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ${s.status === "online" ? "bg-emerald-500/15 text-emerald-200" : s.status === "pending" ? "bg-amber-500/15 text-amber-200" : "bg-red-500/15 text-red-200"}`}>{s.status === "online" ? "آنلاین" : s.status === "pending" ? "در انتظار نصب" : s.status}</span></td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <button disabled={scaling === s.id} onClick={() => changeScale(s, -1)} className="rounded-md border border-white/10 p-1 text-muted hover:bg-white/10 disabled:opacity-40"><Minus size={11} /></button>
+                          <span className={`min-w-[46px] text-center font-black ${s.online_workers !== s.desired_workers ? "text-amber-300" : "text-emerald-300"}`}>{s.online_workers}/{s.desired_workers}</span>
+                          <button disabled={scaling === s.id} onClick={() => changeScale(s, 1)} className="rounded-md border border-white/10 p-1 text-muted hover:bg-white/10 disabled:opacity-40"><Plus size={11} /></button>
+                        </div>
+                        <div className="mt-1 text-[10px] text-muted">همزمانی: {s.worker_concurrency} · {s.worker_names.slice(0, 2).join(", ")}{s.worker_names.length > 2 ? ` +${s.worker_names.length - 2}` : ""}</div>
+                      </td>
+                      <td className="px-3 py-2.5 text-muted">{s.cpu_limit} CPU / {s.mem_limit}</td>
+                      <td className="px-3 py-2.5 text-muted">{fmtFa(s.last_heartbeat_at)}</td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="outline" onClick={() => setJoinShow(s)}>دستور نصب</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setPendingServerDelete(s.id)} className="text-red-300"><Trash2 size={12} /></Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="mt-3 text-[11px] leading-5 text-muted">ورکرهای هر سرور را همین‌جا با +/− تنظیم کنید — ایجنت روی سرور ظرف ~۱۰ ثانیه اعمال می‌کند. افزودن سرور: دکمه «افزودن سرور» → دستور یک‌خطی را روی سرور جدید اجرا کنید.</p>
+        </Card>
 
         <Card className="p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -479,6 +535,80 @@ docker compose -f docker-compose.worker.yml up -d --build`;
         {addOpen && <FleetModal onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); onToast("موتور افزوده شد"); }} />}
         {editNode && <FleetModal node={editNode} onClose={() => setEditNode(null)} onDone={() => { setEditNode(null); load(); onToast("ذخیره شد"); }} />}
         {pendingDelete !== null && <Confirm title="حذف موتور" body="این موتور از fleet حذف شود؟ تسک‌های در حال اجرا قطع نمی‌شوند." onCancel={() => setPendingDelete(null)} onConfirm={async () => { try { await adminApi.deleteFleet(pendingDelete); onToast("حذف شد"); } catch (e) { onToast((e as Error).message); } setPendingDelete(null); load(); }} />}
+
+        {joinOpen && <JoinServerModal onClose={() => setJoinOpen(false)} onDone={() => { setJoinOpen(false); load(); }} />}
+        {joinShow && <JoinShowModal server={joinShow} onClose={() => setJoinShow(null)} onToast={onToast} />}
+        {pendingServerDelete !== null && <Confirm title="حذف سرور" body="سرور از پنل حذف شود؟ ورکرهایش باید ابتدا به 0 تنظیم شوند." onCancel={() => setPendingServerDelete(null)} onConfirm={async () => { try { await adminApi.deleteServer(pendingServerDelete); onToast("حذف شد"); } catch (e) { onToast((e as Error).message); } setPendingServerDelete(null); load(); }} />}
+      </div>
+    );
+  }
+
+  function JoinServerModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+    const [f, setF] = useState({ name: "", region: "", desired_workers: 2, worker_concurrency: 4, cpu_limit: "2.0", mem_limit: "2G" });
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const [created, setCreated] = useState<{ id: number; name: string; join_token: string } | null>(null);
+    const submit = async () => {
+      if (!f.name.trim()) { setErr("نام سرور الزامی است (مثلاً srv-eu-1)"); return; }
+      setBusy(true); setErr("");
+      try { const c = await adminApi.createServer({ name: f.name.trim(), region: f.region.trim() || null, desired_workers: f.desired_workers, worker_concurrency: f.worker_concurrency, cpu_limit: f.cpu_limit, mem_limit: f.mem_limit }); setCreated(c); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    const cmd = created ? `curl -fsSL http://206.245.166.14:9001/install/${created.join_token} | bash` : "";
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={created ? onClose : onClose}>
+        <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          {!created ? (
+            <>
+              <h3 className="font-black">افزودن سرور جدید</h3>
+              <p className="mt-1 text-xs text-muted">سرور ثبت می‌شود و یک دستور نصب یک‌خطی می‌گیرید که روی سرور جدید اجرا می‌کنید.</p>
+              {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+              <div className="mt-4 space-y-3">
+                <div className="flex gap-2">
+                  <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="نام سرور (srv-eu-1) *" className="flex-1 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+                  <input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} placeholder="region" className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+                </div>
+                <div className="flex gap-2 text-xs">
+                  <label className="flex-1">ورکرها<input type="number" value={f.desired_workers} onChange={(e) => setF({ ...f, desired_workers: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                  <label className="flex-1">همزمانی/ورکر<input type="number" value={f.worker_concurrency} onChange={(e) => setF({ ...f, worker_concurrency: Number(e.target.value) || 1 })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                </div>
+                <div className="flex gap-2 text-xs">
+                  <label className="flex-1">CPU<input value={f.cpu_limit} onChange={(e) => setF({ ...f, cpu_limit: e.target.value })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                  <label className="flex-1">RAM<input value={f.mem_limit} onChange={(e) => setF({ ...f, mem_limit: e.target.value })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                </div>
+              </div>
+              <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "ثبت و گرفتن دستور"}</Button></div>
+            </>
+          ) : (
+            <>
+              <h3 className="font-black">سرور «{created.name}» ثبت شد ✅</h3>
+              <p className="mt-2 text-xs text-muted">این دستور را روی سرور جدید اجرا کنید (docker لازم است — اگر نبود خودش نصب می‌کند):</p>
+              <div className="relative mt-3">
+                <pre dir="ltr" className="overflow-auto rounded-xl border border-white/10 bg-black/60 p-3 text-left text-[11px] leading-5 text-emerald-200">{cmd}</pre>
+                <button onClick={() => { navigator.clipboard.writeText(cmd); }} className="absolute left-2 top-2 rounded-lg bg-white/10 px-2 py-1 text-[10px] font-bold hover:bg-white/20">کپی</button>
+              </div>
+              <p className="mt-3 text-[11px] leading-5 text-muted">ایجنت ظرف ~۱۰ ثانیه به پنل وصل می‌شود و {f.desired_workers} ورکر بالا می‌آورد. تعداد ورکرها بعداً از همین جدول با +/− قابل تغییر است.</p>
+              <div className="mt-4 flex justify-end"><Button onClick={onDone}>متوجه شدم</Button></div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function JoinShowModal({ server, onClose, onToast }: { server: ServerRow; onClose: () => void; onToast: (m: string) => void }) {
+    const cmd = `curl -fsSL http://206.245.166.14:9001/install/${server.join_token} | bash`;
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="w-full max-w-xl rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          <h3 className="font-black">دستور نصب «{server.name}»</h3>
+          <div className="relative mt-3">
+            <pre dir="ltr" className="overflow-auto rounded-xl border border-white/10 bg-black/60 p-3 text-left text-[11px] leading-5 text-emerald-200">{cmd}</pre>
+            <button onClick={() => { navigator.clipboard.writeText(cmd); onToast("کپی شد"); }} className="absolute left-2 top-2 rounded-lg bg-white/10 px-2 py-1 text-[10px] font-bold hover:bg-white/20">کپی</button>
+          </div>
+          <div className="mt-4 flex justify-end"><Button onClick={onClose}>بستن</Button></div>
+        </div>
       </div>
     );
   }

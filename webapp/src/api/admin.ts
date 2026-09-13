@@ -53,3 +53,24 @@ export const updateFleet = (id: number, body: { name: string; url: string; api_k
 export const deleteFleet = (id: number) => api<{ ok: boolean }>(`/api/v1/admin/fleet/${id}`, { method: "DELETE" });
 export const recheckFleet = (id: number) => api<{ id: number; healthy: boolean; detail: string }>(`/api/v1/admin/fleet/${id}/health`, { method: "POST" });
 export const listWorkers = () => api<WorkerRow[]>("/api/v1/admin/workers");
+
+
+// ---------------------------------------------------------------------------
+// Server fleet (one-line join + panel-controlled scaling)
+// ---------------------------------------------------------------------------
+
+export type ServerRow = {
+  id: number; name: string; region: string | null; join_token: string;
+  desired_workers: number; worker_concurrency: number;
+  cpu_limit: string; mem_limit: string;
+  status: string; observed_workers: number; online_workers: number; worker_names: string[];
+  docker_ok: boolean; host_info: { hostname?: string; cpu_count?: number; mem_total_gb?: number; disk_total_gb?: number; os?: string } | null;
+  last_heartbeat_at: string | null; created_at: string | null;
+};
+
+export const listServers = () => api<ServerRow[]>("/api/v1/admin/servers");
+export const createServer = (body: { name: string; region?: string | null; desired_workers?: number; worker_concurrency?: number; cpu_limit?: string; mem_limit?: string }) =>
+  api<{ id: number; name: string; join_token: string }>("/api/v1/admin/servers", { method: "POST", body: JSON.stringify(body) });
+export const deleteServer = (id: number) => api<{ ok: boolean }>(`/api/v1/admin/servers/${id}`, { method: "DELETE" });
+export const scaleServer = (id: number, body: { desired_workers: number; worker_concurrency?: number; cpu_limit?: string; mem_limit?: string }) =>
+  api<{ ok: boolean; desired_workers: number }>(`/api/v1/admin/servers/${id}/scale`, { method: "POST", body: JSON.stringify(body) });

@@ -4,6 +4,10 @@ Multi-tenant SaaS platform wrapping [Vibe-Trading](https://github.com/HKUDS/Vibe
 
 ## ✨ Features
 
+> 🆕 **Server Fleet v1.9** — one-line server join (`curl | bash`) + panel-controlled
+> per-server worker scaling (+/− in the Nodes tab). Each joined server runs a tiny
+> agent that reconciles desired state from the control plane every 10s.
+
 - 🤖 **Telegram Bot** — Professional Persian/English bot with AI chat, backtest, swarm analysis
 - 👥 **Multi-Tenant** — User management, subscriptions, rate limiting, anti-abuse
 - ⚡ **Parallel Workers** — Horizontal scaling, add servers with one command
@@ -35,13 +39,26 @@ Multi-tenant SaaS platform wrapping [Vibe-Trading](https://github.com/HKUDS/Vibe
 curl -fsSL https://raw.githubusercontent.com/mahdiahmadian13-dotcom/Vibe-Trading-SaaS/main/setup.sh | bash
 ```
 
-### Add Worker Server
+### Add Worker Server (one-line join, panel-controlled scaling)
+
+From the admin panel → **Nodes tab → Servers → «افزودن سرور»**: register a name and get a
+one-line installer. Run it on the new server — the node agent joins automatically and
+its workers appear in the panel within ~30s:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mahdiahmadian13-dotcom/Vibe-Trading-SaaS/main/setup.sh | bash -s -- \
-  --role worker \
-  --broker redis://CENTRAL_IP:6379
+curl -fsSL http://CENTRAL_IP:9001/install/<JOIN_TOKEN> | bash
 ```
+
+The installer (idempotent): installs Docker if missing, downloads the node bundle
+(agent + worker + compose file), and starts the agent. The agent then:
+- pulls desired state (worker count, per-worker concurrency, CPU/RAM limits) from the control plane every 10s,
+- scales the `worker` service via `docker compose --scale`,
+- heartbeats observed state, host info (CPU/RAM/disk), and Docker health every 15s.
+
+Scale workers per-server from the panel with **+/−** (or the
+`POST /api/v1/admin/servers/{id}/scale` API) — applied within ~10s on the remote server.
+Requirements: the new server must reach the central Redis (6379), Postgres (5432), and
+Engine (8899); both are exposed by default (restrict with a firewall for production).
 
 ### Add Engine Server
 
