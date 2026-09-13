@@ -11,7 +11,7 @@ import httpx
 import redis.asyncio as aioredis
 from arq.connections import RedisSettings
 
-import os, sys
+import os, sys, socket
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from shared.models import (
@@ -26,7 +26,8 @@ from shared.models import (
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 ENGINE_URL = os.getenv("VIBE_ENGINE_URL", "http://engine:8899")
 ENGINE_API_KEY = os.getenv("VIBE_ENGINE_API_KEY", "")
-WORKER_NAME = os.getenv("WORKER_NAME", "worker-1")
+# Unique per container (docker --scale replicas get distinct hostnames)
+WORKER_NAME = os.getenv("WORKER_NAME") or f"worker-{socket.gethostname().split('.')[0]}"
 WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "4"))
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 

@@ -9,7 +9,8 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "127.0.0.1:6379:6379"
+      # 127.0.0.1 only by default; set PUBLISH_REDIS=0.0.0.0 in .env to allow remote workers
+      - "${PUBLISH_REDIS:-127.0.0.1}:6379:6379"
     volumes:
       - redis-data:/data
     command: >
@@ -30,7 +31,8 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "127.0.0.1:5432:5432"
+      # 127.0.0.1 only by default; set PUBLISH_PG=0.0.0.0 in .env to allow remote workers
+      - "${PUBLISH_PG:-127.0.0.1}:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-vibetrader}
       POSTGRES_USER: ${POSTGRES_USER:-vt}
@@ -141,7 +143,9 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_URL=redis://redis:6379/0
-      - WORKER_NAME=worker-central-1
+      # WORKER_NAME unset => auto worker-<hostname> (unique per replica when scaling)
+      - WORKER_NAME=${CENTRAL_WORKER_NAME:-}
+      - WORKER_CONCURRENCY=${CENTRAL_WORKER_CONCURRENCY:-4}
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-vt}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vibetrader}
       - VIBE_ENGINE_URL=${VIBE_ENGINE_URL:-http://vibe-trading-vibe-trading-1:8899}
     networks:

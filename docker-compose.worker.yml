@@ -1,15 +1,21 @@
 # ============================================================================
 # Vibe-Trading SaaS — Remote Worker (connects to central Redis)
 # ============================================================================
-# Usage on remote server:
-#   BROKER_URL=redis://CENTRAL_IP:6379 \
+# Usage on remote server (copy the whole repo there, or just: worker/, shared/, this file, .env optional):
+#   BROKER_URL=redis://CENTRAL_IP:6379/0 \
 #   ENGINE_URL=http://CENTRAL_IP:8899 \
 #   ENGINE_API_KEY=<vibe engine key> \
 #   DATABASE_URL=postgresql+asyncpg://vt:PASS@CENTRAL_IP:5432/vibetrader \
+#   WORKER_NAME=worker-eu-1 \
 #   docker compose -f docker-compose.worker.yml up -d --build
 #
-# Minimal (no DB access): worker runs tasks but cannot mark Task rows —
-# progress still flows through Redis pub/sub. DATABASE_URL is recommended.
+# Scale to N workers on the same server:
+#   docker compose -f docker-compose.worker.yml up -d --build --scale worker=3
+# (each replica gets a unique name worker-<container-id> automatically)
+#
+# Redis/Postgres on the central server must be reachable from this host:
+#   central .env: REDIS_BIND=0.0.0.0 + firewall rule for 6379 (ideally VPN/Tailscale or Redis ACL)
+#   postgres published on 0.0.0.0:5432 with scram auth
 # ============================================================================
 
 services:
@@ -19,7 +25,7 @@ services:
       dockerfile: worker/Dockerfile
     environment:
       - REDIS_URL=${BROKER_URL:?Set BROKER_URL=redis://CENTRAL_IP:6379}
-      - WORKER_NAME=${WORKER_NAME:-worker-$(hostname)}
+      - WORKER_NAME=${WORKER_NAME:-}   # empty => auto worker-<hostname> (unique per replica)
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
       - WORKER_MAX_TASKS=${WORKER_MAX_TASKS:-100}
       - VIBE_ENGINE_URL=${ENGINE_URL:-http://CENTRAL_IP:8899}
@@ -27,6 +33,7 @@ services:
       - DATABASE_URL=${DATABASE_URL:-}
     restart: always
     deploy:
+      replicas: ${WORKER_REPLICAS:-1}
       resources:
         limits:
           cpus: "${CPU_LIMIT:-2.0}"
