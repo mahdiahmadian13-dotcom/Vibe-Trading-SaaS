@@ -423,13 +423,35 @@
     const [addOpen, setAddOpen] = useState(false);
     const [editNode, setEditNode] = useState<EngineRow | null>(null);
     const [pendingDelete, setPendingDelete] = useState<number | null>(null);
+    const [updStatus, setUpdStatus] = useState<import("@/api/admin").FleetUpdateStatus | null>(null);
+    const [updBusy, setUpdBusy] = useState(false);
+    const [updConfirm, setUpdConfirm] = useState(false);
 
     const load = useCallback(() => {
       adminApi.listFleet().then(setFleet).catch((e: Error) => setErr(e.message));
       adminApi.listWorkers().then(setWorkers).catch(() => setWorkers([]));
       adminApi.listServers().then(setServers).catch(() => setServers([]));
+      adminApi.getFleetUpdateStatus().then(setUpdStatus).catch(() => setUpdStatus(null));
     }, []);
     useEffect(() => { load(); }, [load]);
+
+    // live progress while an update job is pending/running
+    useEffect(() => {
+      const st = updStatus?.job?.status;
+      if (st !== "pending" && st !== "running") return;
+      const t = setInterval(() => { adminApi.getFleetUpdateStatus().then(setUpdStatus).catch(() => {}); }, 3000);
+      return () => clearInterval(t);
+    }, [updStatus?.job?.status]);
+
+    const triggerUpdate = async (include_platform: boolean) => {
+      setUpdBusy(true); setUpdConfirm(false);
+      try {
+        await adminApi.triggerFleetUpdate(include_platform);
+        onToast("آپدیت هسته شروع شد");
+        adminApi.getFleetUpdateStatus().then(setUpdStatus).catch(() => {});
+      } catch (e) { onToast((e as Error).message); }
+      finally { setUpdBusy(false); }
+    };
 
     const changeScale = async (s: ServerRow, delta: number) => {
       const target = Math.max(0, s.desired_workers + delta);
@@ -453,6 +475,75 @@ docker compose -f docker-compose.worker.yml up -d --build`;
     return (
       <div className="space-y-4">
         {err && <Card className="p-3 text-sm text-red-300">{err}</Card>}
+
+        <Card className="p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-sm font-black"><RefreshCw size={14} className="text-brand" /> بروزرسانی هسته Vibe-Trading</h3>
+            {(() => {
+              const job = updStatus?.job;
+              const running = job?.status === "pending" || job?.status === "running";
+              return (
+                <div className="flex gap-2">
+                  <Button variant="ghost" size="sm" onClick={load}><RefreshCw size={12} /></Button>
+                  <Button variant="outline" size="sm" disabled={updBusy || running} onClick={() => setUpdConfirm(true)} className="gap-1.5">
+                    <RefreshCw size={13} /> بروزرسانی همه ورکرها
+                  </Button>
+                </div>
+              );
+            })()}
+          </div>
+
+          {updConfirm && (
+            <div className="mb-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-6">
+              هسته از <code className="rounded bg-black/30 px-1">github.com/HKUDS/Vibe-Trading</code> fetch می‌شود، کامیت‌های محلی روی نسخه جدید rebase می‌شوند، ایمیج موتور rebuild و کانتینر recreate می‌شود. اگر بعد از آپدیت موتور سالم نباشد، خودکار به کامیت قبلی برمی‌گردد (rollback).
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setUpdConfirm(false)}>انصراف</Button>
+                <Button size="sm" onClick={() => triggerUpdate(false)}>فقط هسته</Button>
+                <Button size="sm" onClick={() => triggerUpdate(true)}>هسته + پلتفرم</Button>
+              </div>
+            </div>
+          )}
+
+          {(() => {
+            const job = updStatus?.job;
+            if (!job) return <p className="text-xs text-muted">هیچ آپدیتی تا الان اجرا نشده. با دکمه بالا، هسته و همه ورکرهای همه سرورها را یک‌جا به آخرین نسخه آپدیت کنید.</p>;
+            const badge: Record<string, { label: string; cls: string }> = {
+              pending: { label: "در صف", cls: "bg-amber-500/15 text-amber-200 ring-amber-500/30" },
+              running: { label: `در حال اجرا — ${job.step}`, cls: "bg-sky-500/15 text-sky-200 ring-sky-500/30" },
+              success: { label: "موفق", cls: "bg-emerald-500/15 text-emerald-200 ring-emerald-500/30" },
+              up_to_date: { label: "به‌روز بود", cls: "bg-white/10 text-muted" },
+              failed: { label: "ناموفق", cls: "bg-red-500/15 text-red-200 ring-red-500/30" },
+              rolled_back: { label: "برگشت خودکار", cls: "bg-amber-500/15 text-amber-200 ring-amber-500/30" },
+            };
+            const b = badge[job.status] ?? badge.pending;
+            return (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ring-inset ${b.cls}`}>{b.label}</span>
+                  <span className="text-muted">#{job.id}</span>
+                  {job.from_commit && <span className="text-muted" dir="ltr">{job.from_commit.slice(0, 9)} → {(job.to_commit ?? "?").slice(0, 9)}</span>}
+                  <span className="text-muted">{fmtFa(job.finished_at ?? job.started_at ?? job.created_at)}</span>
+                  {job.scope === "engine+platform" && <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px]">هسته+پلتفرم</span>}
+                </div>
+                {job.error && <p className="rounded-lg bg-red-500/10 px-3 py-2 text-[11px] leading-5 text-red-200" dir="auto">{job.error}</p>}
+                {(job.log ?? []).length > 0 && (
+                  <div dir="ltr" className="max-h-44 overflow-auto rounded-xl border border-white/10 bg-black/50 p-3 text-left font-mono text-[11px] leading-5 text-emerald-200">
+                    {(job.log ?? []).map((l, i) => <div key={i}><span className="text-muted">{(l.ts ?? "").slice(11, 19)}</span> {l.line}</div>)}
+                  </div>
+                )}
+                {(updStatus?.servers ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {(updStatus?.servers ?? []).map((s) => (
+                      <span key={s.id} className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-bold ${s.converged ? "bg-emerald-500/10 text-emerald-200" : "bg-amber-500/10 text-amber-200"}`}>
+                        {s.converged ? "✓" : "⏳"} {s.name}: {s.converged ? "ورکرها به‌روز" : `در انتظار همگرایی (epoch ${s.workers_epoch_reported}/${s.worker_epoch})`}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </Card>
 
         <Card className="p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">

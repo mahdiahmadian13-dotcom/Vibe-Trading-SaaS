@@ -34,6 +34,7 @@ HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", "15"))
 
 _last_state: dict = {}
 _last_error: str = ""
+_epoch_applied: int = 0          # worker bundle epoch this node last rebuilt for
 
 
 def _now() -> str:
@@ -82,6 +83,20 @@ def _ps_running_workers() -> int:
 
 def outlines(out: str) -> list[str]:
     return [ln for ln in out.splitlines() if ln.strip()]
+
+
+def _refresh_bundle() -> bool:
+    """Re-download the worker bundle from the control plane (fleet update)."""
+    rc, out = _run([
+        "curl", "-fsSL", f"{CONTROL_URL}/api/v1/node/{JOIN_TOKEN}/bundle",
+        "-o", "node.tar.gz",
+    ], timeout=120)
+    if rc != 0:
+        return False
+    rc, out = _run(["tar", "xzf", "node.tar.gz"], timeout=120)
+    if rc != 0:
+        return False
+    return True
 
 
 def _scale_workers(n: int) -> tuple[int, str]:
@@ -164,7 +179,7 @@ def _docker_ok() -> bool:
 
 
 async def reconcile_loop():
-    global _last_state, _last_error
+    global _last_state, _last_error, _epoch_applied
     async with httpx.AsyncClient() as client:
         while True:
             try:
@@ -172,6 +187,25 @@ async def reconcile_loop():
                 if state:
                     _apply_env_files(state)
                     _last_state = state
+
+                    # Fleet update: epoch bumped by the control plane → pull the
+                    # fresh bundle and rebuild workers (same count as before).
+                    epoch = int(state.get("workers_epoch", 0) or 0)
+                    desired = int(state.get("desired_workers", 0))
+                    if epoch > _epoch_applied and desired > 0:
+                        print(f"[agent] fleet update: epoch {_epoch_applied} -> {epoch} — refreshing bundle", flush=True)
+                        if _refresh_bundle():
+                            _apply_env_files(state)   # .env may be inside the tar
+                            rc, out = _scale_workers(desired)  # --build rebuilds
+                            if rc == 0:
+                                _epoch_applied = epoch
+                                print(f"[agent] workers rebuilt for epoch {epoch}", flush=True)
+                            else:
+                                _last_error = out[-300:]
+                                print(f"[agent] rebuild failed: {out[-300:]}", flush=True)
+                        else:
+                            print("[agent] bundle download failed — retry next tick", flush=True)
+
                 desired = int(state.get("desired_workers", 0))
                 running = _ps_running_workers()
                 if running >= 0 and running != desired:
@@ -196,6 +230,7 @@ async def heartbeat_loop():
                 "docker_ok": _docker_ok(),
                 "host_info": _host_info(),
                 "last_error": _last_error,
+                "workers_epoch": _epoch_applied,
                 "ts": _now(),
             }
             ok = await _heartbeat(client, observed)

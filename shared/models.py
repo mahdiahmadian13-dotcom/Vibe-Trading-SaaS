@@ -305,6 +305,38 @@ class ServerNode(Base):
     docker_ok = Column(Boolean, default=False)
     host_info = Column(JSON, nullable=True)            # {cpu, mem, docker_ver, ...}
     last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    # fleet update convergence: desired epoch (bumped by updater jobs) vs
+    # the epoch the agent last rebuilt its workers for (heartbeat field).
+    worker_epoch = Column(Integer, default=1, nullable=False, server_default="1")
+    workers_epoch_reported = Column(Integer, default=0, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class FleetUpdate(Base):
+    """A one-click fleet update job (engine core + workers everywhere).
+
+    Created by an admin from the panel; executed by the `updater` service
+    which polls GET /api/v1/updater/poll and streams progress back via
+    POST /api/v1/updater/report. Terminal statuses: success | failed |
+    rolled_back | up_to_date.
+    """
+    __tablename__ = "fleet_updates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    status = Column(String(32), default="pending", index=True)  # pending|running|success|failed|rolled_back|up_to_date
+    step = Column(String(64), default="queued")
+    scope = Column(String(32), default="engine")     # engine | engine+platform
+    include_platform = Column(Boolean, default=False)
+    triggered_by = Column(Integer, nullable=True)     # admin user id
+    from_commit = Column(String(64), nullable=True)
+    to_commit = Column(String(64), nullable=True)
+    changed = Column(Boolean, default=False)          # anything actually updated
+    workers_epoch = Column(Integer, default=0)        # epoch this job rolled out (0 = none)
+    log = Column(JSON, default=list, nullable=True)  # [{ts, line}, ...] capped
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

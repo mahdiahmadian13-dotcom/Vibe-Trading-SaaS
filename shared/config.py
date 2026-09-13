@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     # --- Fleet (multi-server) ---
     FLEET_HEALTH_INTERVAL: int = 30
     FLEET_HEALTH_FAILS: int = 2
+    # Fleet updater (one-click core updates)
+    VT_UPDATER_TOKEN: str = ""
     # Public endpoints for node agents joining from other servers
     REDIS_URL_PUBLIC: str | None = None      # e.g. redis://206.245.166.14:6379/0
     DATABASE_URL_PUBLIC: str | None = None   # postgres URL reachable from node servers

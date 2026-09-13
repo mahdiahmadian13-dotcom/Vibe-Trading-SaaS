@@ -166,6 +166,38 @@ services:
           cpus: "2.0"
           memory: 2G
 
+  # ---------------------------------------------------------------------------
+  # Fleet Updater — one-click core updates (admin panel → engine+workers)
+  # ---------------------------------------------------------------------------
+  updater:
+    build:
+      context: .
+      dockerfile: updater/Dockerfile
+    environment:
+      - VT_CONTROL_URL=http://gateway:9000
+      - VT_UPDATER_TOKEN=${VT_UPDATER_TOKEN:?Set VT_UPDATER_TOKEN in .env}
+      - VT_ENGINE_DIR=/engine-repo
+      - VT_PLATFORM_DIR=/repo
+    volumes:
+      # drive the HOST docker daemon (build/recreate engine containers)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # engine repo (HKUDS/Vibe-Trading) — git fetch/rebase/build
+      - /opt/Vibe-Trading:/engine-repo
+      # SaaS platform repo — optional platform updates (git pull --ff-only)
+      - /root/vibe-trading-saas:/repo
+    networks:
+      - default
+      - engine_net
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
 volumes:
   redis-data:
   pg-data:

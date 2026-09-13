@@ -28,8 +28,9 @@ import hmac as _hmac
 from shared.models import (
     init_db, get_db, User, Subscription, Task, VibeSession,
     UsageLog, SwarmRun, PlanTier, SubscriptionStatus, TaskStatus, _utcnow,
-    EngineNode, WorkerNode, Payment, SettingKV, LoginLog, ServerNode, Referral
+    EngineNode, WorkerNode, Payment, SettingKV, LoginLog, ServerNode, Referral, FleetUpdate
 )
+from sqlalchemy import update as _sa_update
 
 from app import coupons as coupons_mod
 from app.fleet import EnginePool, get_engine_pool, start_background_loops, stop_background_loops
@@ -1792,6 +1793,7 @@ async def node_state(token: str, db: AsyncSession = Depends(get_db)):
         "database_url": settings.DATABASE_URL_PUBLIC or "",
         "engine_url": settings.VIBE_ENGINE_URL_PUBLIC or settings.VIBE_ENGINE_URL,
         "engine_api_key": settings.VIBE_ENGINE_API_KEY if settings.VIBE_NODE_SHARE_ENGINE_KEY else "",
+        "workers_epoch": s.worker_epoch,
     }
 
 
@@ -1805,8 +1807,137 @@ async def node_heartbeat(token: str, body: dict, db: AsyncSession = Depends(get_
     s.docker_ok = bool(body.get("docker_ok", False))
     s.host_info = body.get("host_info") or {}
     s.last_heartbeat_at = _utcnow()
+    # fleet-update convergence: which worker bundle epoch this server runs
+    if body.get("workers_epoch"):
+        s.workers_epoch_reported = int(body["workers_epoch"])
     await db.commit()
     return {"ok": True}
+
+
+# ============================================================================
+# Fleet Updater — one-click core update (engine + workers on all servers)
+# ============================================================================
+
+class FleetUpdateTrigger(BaseModel):
+    include_platform: bool = False
+
+
+def _require_updater_token(token: str) -> None:
+    settings = get_settings()
+    if not settings.VT_UPDATER_TOKEN or token != settings.VT_UPDATER_TOKEN:
+        raise HTTPException(401, "updater token invalid")
+
+
+@app.get("/api/v1/updater/poll")
+async def updater_poll(token: str, db: AsyncSession = Depends(get_db)):
+    """Updater service claims the oldest pending job (atomic pending→running)."""
+    _require_updater_token(token)
+    row = (await db.execute(
+        select(FleetUpdate).where(FleetUpdate.status == "pending")
+        .order_by(FleetUpdate.id).limit(1).with_for_update(skip_locked=True)
+    )).scalar_one_or_none()
+    if not row:
+        return None
+    row.status = "running"
+    row.step = "claimed"
+    row.started_at = _utcnow()
+    await db.commit()
+    return {
+        "id": row.id,
+        "include_platform": row.include_platform,
+        "scope": row.scope,
+    }
+
+
+@app.post("/api/v1/updater/report")
+async def updater_report(body: dict, db: AsyncSession = Depends(get_db)):
+    """Updater streams progress/log lines/terminal status here."""
+    _require_updater_token(body.get("token", ""))
+    job = (await db.execute(select(FleetUpdate).where(FleetUpdate.id == int(body["job_id"])))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "job not found")
+    if body.get("step"):
+        job.step = str(body["step"])[:64]
+    if body.get("line"):
+        entries = list(job.log or [])
+        entries.append({"ts": _utcnow().isoformat(), "line": str(body["line"])[:500]})
+        job.log = entries[-200:]
+    if body.get("to_commit"):
+        job.to_commit = str(body["to_commit"])[:64]
+    if body.get("from_commit"):
+        job.from_commit = str(body["from_commit"])[:64]
+    if body.get("changed") is not None:
+        job.changed = bool(body["changed"])
+    if body.get("error"):
+        job.error = str(body["error"])[:2000]
+    status = body.get("status")
+    if status:
+        job.status = str(status)
+        if status in ("success", "failed", "rolled_back", "up_to_date"):
+            job.finished_at = _utcnow()
+            # On successful engine update: bump worker epoch on ALL servers so
+            # every agent rebuilds its workers from the fresh bundle. Central
+            # server's own worker is rebuilt by the updater's platform step or
+            # manually; remote agents converge within ~10s via state.
+            if status == "success" and job.changed:
+                epoch = int(_utcnow().timestamp())
+                job.workers_epoch = epoch
+                await db.execute(
+                    _sa_update(ServerNode).values(worker_epoch=epoch)
+                )
+                # central worker (this host) — bump a setting so its next
+                # rebuild is attributable; the updater itself rebuilds it
+                # in include_platform mode, else admin rebuilds on deploy.
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/admin/fleet/update")
+async def admin_fleet_update_trigger(req: FleetUpdateTrigger, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """One-click: update engine core to latest upstream + roll out to workers."""
+    active = (await db.execute(
+        select(FleetUpdate).where(FleetUpdate.status.in_(["pending", "running"]))
+    )).scalar_one_or_none()
+    if active:
+        raise HTTPException(409, f"یک آپدیت در حال اجراست (#{active.id})")
+    job = FleetUpdate(
+        include_platform=req.include_platform,
+        scope="engine+platform" if req.include_platform else "engine",
+        triggered_by=admin.id,
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    return {"id": job.id, "status": job.status, "scope": job.scope}
+
+
+@app.get("/api/v1/admin/fleet/update/status")
+async def admin_fleet_update_status(admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """Current/last update job + engine version info + server convergence."""
+    job = (await db.execute(
+        select(FleetUpdate).order_by(FleetUpdate.id.desc()).limit(1)
+    )).scalar_one_or_none()
+    servers = (await db.execute(select(ServerNode).order_by(ServerNode.id))).scalars().all()
+    return {
+        "job": {
+            "id": job.id, "status": job.status, "step": job.step, "scope": job.scope,
+            "from_commit": job.from_commit, "to_commit": job.to_commit,
+            "changed": job.changed, "log": job.log or [],
+            "error": job.error,
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+        } if job else None,
+        "servers": [
+            {
+                "id": s.id, "name": s.name, "status": s.status,
+                "worker_epoch": s.worker_epoch,
+                "workers_epoch_reported": s.workers_epoch_reported,
+                "converged": s.workers_epoch_reported >= s.worker_epoch,
+                "observed_workers": s.observed_workers,
+            } for s in servers
+        ],
+    }
 
 
 # ============================================================================

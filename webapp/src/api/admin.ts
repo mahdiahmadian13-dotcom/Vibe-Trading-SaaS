@@ -76,6 +76,27 @@ export const scaleServer = (id: number, body: { desired_workers: number; worker_
   api<{ ok: boolean; desired_workers: number }>(`/api/v1/admin/servers/${id}/scale`, { method: "POST", body: JSON.stringify(body) });
 
 
+// ---------------------------------------------------------------------------
+// Fleet update (one-click engine core update + worker rollout)
+// ---------------------------------------------------------------------------
+
+export type FleetUpdateJob = {
+  id: number; status: string; step: string; scope: string;
+  from_commit: string | null; to_commit: string | null; changed: boolean;
+  log: Array<{ ts: string; line: string }>; error: string | null;
+  started_at: string | null; finished_at: string | null; created_at: string | null;
+};
+
+export type FleetUpdateStatus = {
+  job: FleetUpdateJob | null;
+  servers: Array<{ id: number; name: string; status: string; worker_epoch: number; workers_epoch_reported: number; converged: boolean; observed_workers: number }>;
+};
+
+export const triggerFleetUpdate = (include_platform: boolean) =>
+  api<{ id: number; status: string; scope: string }>("/api/v1/admin/fleet/update", { method: "POST", body: JSON.stringify({ include_platform }) });
+export const getFleetUpdateStatus = () => api<FleetUpdateStatus>("/api/v1/admin/fleet/update/status");
+
+
   // ---------------------------------------------------------------------------
   // Rich monitoring (/admin/monitor/full)
   // ---------------------------------------------------------------------------
