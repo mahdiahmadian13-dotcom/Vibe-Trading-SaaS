@@ -14,6 +14,7 @@ export default {
         brand: { DEFAULT: "#6366f1", soft: "#8b5cf6", deep: "#4f46e5" },
         pos: "#34d399",
         neg: "#f87171",
+        amber: { DEFAULT: "#fbbf24", soft: "#fcd34d" },
       },
       fontFamily: { sans: ["Vazirmatn", "Tahoma", "sans-serif"] },
       borderRadius: { xl2: "1.15rem" },

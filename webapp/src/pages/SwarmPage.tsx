@@ -10,6 +10,7 @@ import { faNum } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/primitives";
 import { Badge, StatusDot } from "@/components/ui/Badge";
+import { CouponBlocker, isCouponError } from "@/components/Coupons";
 
 /* =============================== wizard state ============================== */
 
@@ -213,18 +214,29 @@ function SwarmForm({ preset, onBack, onLaunched }: {
     else launch(v);
   }
 
+  const [couponOut, setCouponOut] = useState(false);
+
   async function launch(final: Record<string, string>) {
     setLaunching(true); setLaunchError("");
     try {
       const res = await createSwarmRun(preset.name, final);
       onLaunched(res.id);
     } catch (e) {
+      if (isCouponError(e)) { setCouponOut(true); setLaunching(false); return; }
       setLaunchError((e as Error).message || "خطا در اجرای تیم");
       setLaunching(false);
     }
   }
 
   const crypto = ["crypto_research_lab", "crypto_trading_desk"].includes(preset.name);
+
+  if (couponOut) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10">
+        <CouponBlocker kind="swarm" onRetry={() => setCouponOut(false)} />
+      </div>
+    );
+  }
 
   return (
     <div>

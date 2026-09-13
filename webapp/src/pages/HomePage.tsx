@@ -7,6 +7,7 @@ import { faNum, fmtCls, fmtPct } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Badge, StatusDot } from "@/components/ui/Badge";
 import { Card, CardSkeleton, EmptyState, StatCard } from "@/components/ui/primitives";
+import { CouponCards } from "@/components/Coupons";
 
 /* ---------------------------------- data ---------------------------------- */
 
@@ -174,6 +175,15 @@ export default function HomePage({ goChat, goReports, goDiscovery }: { goChat: (
       </header>
 
       <Hero onCta={goChat} onReports={goReports} />
+
+      {/* ---------- coupon wallet ---------- */}
+      <div className="mt-6 md:mt-8">
+        <div className="mb-2.5 flex items-center justify-between">
+          <h2 className="text-[13.5px] font-extrabold tracking-tight md:text-[15px]">🎟️ کوپن‌های شما</h2>
+          <span className="text-[10.5px] text-muted">شارژ خودکار · بدون درخواست</span>
+        </div>
+        <CouponCards />
+      </div>
 
       {/* ---------- stats ---------- */}
       <div className="mt-6 grid grid-cols-2 gap-3 md:mt-8 md:grid-cols-4 md:gap-4">

@@ -27,6 +27,8 @@ from shared.models import (
     UsageLog, SwarmRun, PlanTier, SubscriptionStatus, TaskStatus, _utcnow,
     EngineNode, WorkerNode, Payment, SettingKV, LoginLog, ServerNode
 )
+
+from app import coupons as coupons_mod
 from app.fleet import EnginePool, get_engine_pool, start_background_loops, stop_background_loops
 from shared.security import (
     create_access_token, hash_password, verify_password,
@@ -268,7 +270,7 @@ class TokenResponse(BaseModel):
 
 
 @app.post("/api/v1/auth/register", response_model=TokenResponse)
-async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
+async def register(req: RegisterRequest, request: Request, db: AsyncSession = Depends(get_db)):
     settings = get_settings()
 
     # Check existing username
@@ -309,8 +311,15 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
         expires_at=_utcnow() + timedelta(days=365 * 10),
     )
     db.add(sub)
-    await db.commit()
-    await db.refresh(user)
+    await db.flush()
+
+    # Welcome pack: 3 free backtest coupons (never expire).
+    # ensure_welcome commits internally → capture id first (attribute access
+    # after commit would trigger a lazy refresh outside greenlet context),
+    # then re-fetch a fresh instance for the rest of the flow.
+    _uid = user.id
+    await coupons_mod.ensure_welcome(db, _uid)
+    user = (await db.execute(select(User).where(User.id == _uid))).scalar_one()
 
     token = create_access_token({"sub": user.id, "username": user.username})
     try:
@@ -354,6 +363,21 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
 # ============================================================================
 # Subscription Routes
 # ============================================================================
+
+@app.get("/api/v1/coupons")
+async def get_coupons(
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """User's coupon wallet: backtest + swarm counts + refill times."""
+    state = await coupons_mod.coupon_state(db, user)
+    return {
+        "backtest": state["backtest"],
+        "swarm": state["swarm"],
+        "plan": user.current_plan.value,
+        "metered": coupons_mod.uses_coupons(user),
+    }
+
 
 @app.get("/api/v1/subscription/plans")
 async def list_plans():
@@ -415,8 +439,24 @@ async def send_message(
     await _require_owned_session(db, user, session_id)
     await _check_limit(db, user, "message")
 
+    # Free-tier: one backtest coupon per analysis message
+    used_coupon = None
+    if coupons_mod.uses_coupons(user):
+        used_coupon = await coupons_mod.try_consume(db, user, "backtest", action=f"chat:{session_id[:12]}")
+        if used_coupon is None:
+            raise HTTPException(
+                status_code=429,
+                detail="کوپن بک‌تست شما به پایان رسید. ۲۴ ساعت دیگر (نیمه‌شب) کوپن جدید شارژ می‌شود.",
+            )
+
     pool = get_pool()
-    result = await pool.request(db, "POST", f"/sessions/{session_id}/messages", json=body)
+    try:
+        result = await pool.request(db, "POST", f"/sessions/{session_id}/messages", json=body)
+    except HTTPException:
+        # engine rejected (busy/409/5xx) → give the coupon back
+        if used_coupon is not None:
+            await coupons_mod.refund_coupon(db, user.id, used_coupon.action or "")
+        raise
 
     usage = await _get_usage(db, user.id)
     usage.messages_sent += 1
@@ -504,8 +544,24 @@ async def create_swarm_run(
 ):
     await _check_limit(db, user, "swarm")
 
+    # Free-tier: 1 swarm coupon per week
+    used_coupon = None
+    if coupons_mod.uses_coupons(user):
+        used_coupon = await coupons_mod.try_consume(db, user, "swarm", action="swarm-run")
+        if used_coupon is None:
+            refill = coupons_mod.next_weekly_utc()
+            raise HTTPException(
+                status_code=429,
+                detail=f"کوپن سوارم هفتگی شما تمام شده. کوپن بعدی {refill.astimezone(coupons_mod._TEHRAN).strftime('%Y-%m-%d')} (دوشنبه ۰۰:۰۰ تهران) شارژ می‌شود.",
+            )
+
     pool = get_pool()
-    result = await pool.request(db, "POST", "/swarm/runs", json=body)
+    try:
+        result = await pool.request(db, "POST", "/swarm/runs", json=body)
+    except HTTPException:
+        if used_coupon is not None:
+            await coupons_mod.refund_coupon(db, user.id, used_coupon.action or "")
+        raise
     run_id = result.get("id")
 
     if run_id:
@@ -586,6 +642,17 @@ async def create_task(
 ):
     """Enqueue a heavy task for background worker processing."""
     await _check_limit(db, user, req.task_type)
+
+    # Free-tier coupon metering: chat/backtest → backtest coupon, swarm → weekly swarm coupon
+    used_coupon = None
+    if coupons_mod.uses_coupons(user):
+        ckind = "swarm" if req.task_type == "swarm" else "backtest"
+        used_coupon = await coupons_mod.try_consume(db, user, ckind, action=f"task:{req.task_type}")
+        if used_coupon is None:
+            if ckind == "swarm":
+                refill = coupons_mod.next_weekly_utc().astimezone(coupons_mod._TEHRAN)
+                raise HTTPException(429, f"کوپن سوارم هفتگی شما تمام شده. کوپن بعدی {refill.strftime('%Y-%m-%d')} (دوشنبه ۰۰:۰۰ تهران) شارژ می‌شود.")
+            raise HTTPException(429, "کوپن بک‌تست شما به پایان رسید. ۲۴ ساعت دیگر (نیمه‌شب) کوپن جدید شارژ می‌شود.")
 
     task_id = str(uuid.uuid4())
     task = Task(

@@ -9,6 +9,7 @@ import {
 import { faNum } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { Card, EmptyState, Skeleton } from "@/components/ui/primitives";
+import { CouponBlocker, CouponCards, isCouponError } from "@/components/Coupons";
 
 type Bubble = { role: "user" | "bot"; text: string };
 
@@ -21,6 +22,7 @@ export default function ChatPage() {
   const [elapsed, setElapsed] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loadErr, setLoadErr] = useState("");
+  const [couponOut, setCouponOut] = useState(false);
   const stopRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -122,6 +124,11 @@ export default function ChatPage() {
       }
     } catch (e) {
       const err = e as Error & { status?: number };
+      if (isCouponError(e)) {
+        setCouponOut(true);
+        setBubbles((b) => [...(b || []), { role: "user", text }]);
+        return;
+      }
       let msg = "❌ خطا: " + err.message;
       if (err.status === 429) msg = "⏳ " + err.message + "\nچند لحظه صبر کن و دوباره بفرست.";
       else if (err.status === 409 || err.message.includes("already has a run")) {
@@ -137,6 +144,15 @@ export default function ChatPage() {
   };
 
   /* -------------------------------- view ---------------------------------- */
+
+  if (couponOut) {
+    return (
+      <div className="mx-auto flex h-[calc(100dvh-150px)] w-full max-w-3xl flex-col items-center justify-center px-4 pt-4 md:h-[calc(100dvh-170px)] md:px-8 md:pt-6">
+        <CouponBlocker kind="backtest" onRetry={() => { setCouponOut(false); }} />
+        <div className="mt-4 w-full max-w-md"><CouponCards compact /></div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-150px)] w-full max-w-3xl flex-col px-4 pt-4 md:h-[calc(100dvh-170px)] md:px-8 md:pt-6">

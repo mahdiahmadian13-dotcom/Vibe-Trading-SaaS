@@ -148,6 +148,33 @@ class UsageLog(Base):
     )
 
 
+class Coupon(Base):
+    """Free-tier metering coupons (backtest / swarm).
+
+    Rules:
+      - 3 welcome backtest coupons at signup (never expire)
+      - +1 backtest coupon per day, valid only until Tehran midnight
+      - 1 swarm coupon per week (grant gated 7 days, max 1 active)
+      - Paid plans are exempt (plan limits apply instead).
+    """
+    __tablename__ = "coupons"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind = Column(String(20), nullable=False)          # backtest | swarm
+    source = Column(String(20), nullable=False)        # welcome | daily | weekly
+    status = Column(String(12), nullable=False, default="active", index=True)  # active | used
+    grant_key = Column(String(48), nullable=True)      # race guard: "daily:2026-09-14" / "weekly:2026-09-14" / "welcome:bt"
+    action = Column(String(64), nullable=True)         # what consumed it
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    expires_at = Column(DateTime(timezone=True), nullable=True)  # daily: Tehran midnight; welcome/weekly: NULL
+    used_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "grant_key", name="uq_coupon_user_grant"),
+    )
+
+
 class SwarmRun(Base):
     """Multi-tenant ownership for swarm runs."""
     __tablename__ = "swarm_runs"
