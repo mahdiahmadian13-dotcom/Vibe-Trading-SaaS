@@ -216,6 +216,23 @@ class Payment(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
 
+
+class LoginLog(Base):
+    """Every successful login (web or bot-linked) for the admin audit trail."""
+    __tablename__ = "login_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    ip = Column(String(64), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, index=True)
+
+    user = relationship("User", lazy="joined")
+
+    __table_args__ = (
+        Index("ix_login_logs_user_time", "user_id", "created_at"),
+    )
+
 class SettingKV(Base):
     """Simple key-value store for runtime settings (plan prices, etc.)."""
     __tablename__ = "setting_kv"
@@ -244,8 +261,20 @@ async def init_db(database_url: str):
     )
     _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
 
+    from sqlalchemy.exc import IntegrityError as _SAIntegrityError
+
     async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.run_sync(Base.metadata.create_all)
+        except _SAIntegrityError:
+            # concurrent startup race (4 uvicorn workers) — the other worker already created the table/type
+            pass
+        except Exception as exc:
+            # asyncpg DuplicateObjectError surfaces as DBAPIError wrapping UniqueViolationError
+            if "already exists" in str(exc):
+                pass
+            else:
+                raise
 
 
 async def get_db():

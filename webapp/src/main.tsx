@@ -1,19 +1,20 @@
 import { StrictMode, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { createRoot } from "react-dom/client";
-import { FileBarChart, FlaskConical, House, MessagesSquare, Users } from "lucide-react";
+import { FileBarChart, FlaskConical, House, MessagesSquare, Shield, Users } from "lucide-react";
 import HomePage from "@/pages/HomePage";
 import SwarmPage from "@/pages/SwarmPage";
 import ChatPage from "@/pages/ChatPage";
 import ReportsPage from "@/pages/ReportsPage";
 import DiscoveryPage from "@/pages/DiscoveryPage";
+import AdminPage from "@/pages/AdminPage";
 import { auth } from "@/api/client";
 import "@/index.css";
 
 function App() {
   const [view, setView] = useState(() => {
     const h = location.hash;
-    return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : h === "#discovery" ? "discovery" : "home";
+    return h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : h === "#discovery" ? "discovery" : h === "#admin" ? "admin" : "home";
   });
 
   useEffect(() => {
@@ -23,7 +24,7 @@ function App() {
   useEffect(() => {
     const onHash = () => {
       const h = location.hash;
-      setView(h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : h === "#discovery" ? "discovery" : "home");
+      setView(h === "#swarm" ? "swarm" : h === "#chat" ? "chat" : h === "#reports" ? "reports" : h === "#discovery" ? "discovery" : h === "#admin" ? "admin" : "home");
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -33,6 +34,7 @@ function App() {
   const goChat = () => { location.hash = "#chat"; setView("chat"); };
   const goReports = () => { location.hash = "#reports"; setView("reports"); };
   const goDiscovery = () => { location.hash = "#discovery"; setView("discovery"); };
+  const goAdmin = () => { location.hash = "#admin"; setView("admin"); };
   const goHome = () => { if (location.hash) location.hash = ""; setView("home"); };
 
   return view === "swarm" ? (
@@ -65,6 +67,8 @@ function App() {
       </div>
       <BottomNav view="home" onHome={goHome} onSwarm={goSwarm} onChat={goChat} goReports={goReports} />
     </>
+  ) : view === "admin" ? (
+    <AdminPage onHome={goHome} />
   ) : (
     <>
       <HomePage goChat={goChat} goReports={goReports} goDiscovery={goDiscovery} />
@@ -74,6 +78,14 @@ function App() {
 }
 
 function TopBar({ onHome, subtitle }: { onHome: () => void; subtitle: string }) {
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    if (!auth.token) return;
+    // lightweight probe: admin overview returns 200 only for admins
+    fetch("/api/v1/admin/overview", { headers: { Authorization: "Bearer " + auth.token } })
+      .then((r) => setIsAdmin(r.ok))
+      .catch(() => {});
+  }, []);
   return (
     <div className="sticky top-0 z-40 border-b border-line bg-bg/80 backdrop-blur-xl">
       <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-3 md:px-8">
@@ -81,7 +93,14 @@ function TopBar({ onHome, subtitle }: { onHome: () => void; subtitle: string }) 
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-brand-soft text-[14px] font-bold text-white">V</div>
           <span className="text-[14px] font-extrabold">Vibe Trading</span>
         </button>
-        <span className="text-[11.5px] text-muted">{subtitle}</span>
+        <span className="flex items-center gap-2">
+          {isAdmin && (
+            <a href="#admin" onClick={(e) => { e.preventDefault(); location.hash = "#admin"; }} className="inline-flex items-center gap-1 rounded-full bg-brand/15 px-2.5 py-1 text-[11px] font-bold text-indigo-200 ring-1 ring-inset ring-brand/30 hover:bg-brand/25">
+              <Shield size={12} /> ادمین
+            </a>
+          )}
+          <span className="text-[11.5px] text-muted">{subtitle}</span>
+        </span>
       </div>
     </div>
   );

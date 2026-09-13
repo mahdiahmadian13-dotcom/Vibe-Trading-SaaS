@@ -1,0 +1,618 @@
+  import { useCallback, useEffect, useRef, useState } from "react";
+  import {
+    Activity, BadgeCheck, Box, Copy, Eye, EyeOff, HardDrive, LayoutDashboard,
+    LogIn, Monitor, Plus, RefreshCw, Search, Server, Shield, Trash2, Users, Wrench, X,
+  } from "lucide-react";
+  import { api } from "@/api/client";
+  import * as adminApi from "@/api/admin";
+  import type { AdminOverview, AdminUserRow, EngineRow, MonitorSummary } from "@/api/admin";
+  import { Button } from "@/components/ui/Button";
+  import { Card } from "@/components/ui/primitives";
+
+  // ---------------------------------------------------------------------------
+  // Small helpers
+  // ---------------------------------------------------------------------------
+
+  function useAdminGuard(onDeny: () => void) {
+    const [ok, setOk] = useState<boolean | null>(null);
+    useEffect(() => {
+      api<{ plan: string; limits: Record<string, unknown> }>("/api/v1/subscription/current")
+        .then(() => api<unknown[]>("/api/v1/admin/overview").then(() => setOk(true)).catch(() => { setOk(false); onDeny(); }))
+        .catch(() => { setOk(false); onDeny(); });
+    }, [onDeny]);
+    return ok;
+  }
+
+  function fmtFa(d: string | null | undefined): string {
+    if (!d) return "—";
+    try { return new Date(d).toLocaleString("fa-IR", { dateStyle: "medium", timeStyle: "short" } as unknown as Intl.DateTimeFormatOptions); } catch { return d; }
+  }
+
+  function planBadge(plan: string) {
+    const m: Record<string, { label: string; cls: string }> = {
+      free: { label: "رایگان", cls: "bg-white/10 text-muted" },
+      basic: { label: "پایه", cls: "bg-sky-500/15 text-sky-200 ring-sky-500/30" },
+      pro: { label: "حرفه‌ای", cls: "bg-violet-500/15 text-violet-200 ring-violet-500/30" },
+      enterprise: { label: "سازمانی", cls: "bg-amber-500/15 text-amber-200 ring-amber-500/30" },
+    };
+    const v = m[plan] ?? m.free;
+    return <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ring-inset ${v.cls}`}>{v.label}</span>;
+  }
+
+  function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
+    useEffect(() => { const t = setTimeout(onClose, 2600); return () => clearTimeout(t); }, [onClose]);
+    return <div className="fixed bottom-6 left-1/2 z-[80] -translate-x-1/2 rounded-xl border border-white/10 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-100 shadow-xl">{msg}</div>;
+  }
+
+  function Confirm({ title, body, onConfirm, onCancel }: { title: string; body: string; onConfirm: () => void; onCancel: () => void }) {
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onCancel}>
+        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-5" onClick={(e) => e.stopPropagation()}>
+          <h3 className="text-sm font-extrabold">{title}</h3>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">{body}</p>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="ghost" onClick={onCancel}>انصراف</Button>
+            <Button variant="destructive" onClick={onConfirm}>تأیید</Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Page
+  // ---------------------------------------------------------------------------
+
+  type Tab = "overview" | "users" | "nodes" | "live" | "logs";
+
+  export default function AdminPage({ onHome }: { onHome: () => void }) {
+    const [tab, setTab] = useState<Tab>("overview");
+    const [toast, setToast] = useState("");
+    const guardOk = useAdminGuard(onHome);
+
+    if (guardOk === null) {
+      return <div className="mx-auto max-w-6xl px-5 py-12 text-sm text-muted">در حال بررسی دسترسی ادمین…</div>;
+    }
+    if (guardOk === false) return null;
+
+    const tabs: Array<{ id: Tab; label: string; icon: typeof LayoutDashboard }> = [
+      { id: "overview", label: "نمای کلی", icon: LayoutDashboard },
+      { id: "users", label: "کاربران", icon: Users },
+      { id: "nodes", label: "نودها", icon: Server },
+      { id: "live", label: "مانیتورینگ زنده", icon: Monitor },
+      { id: "logs", label: "لاگ ورود", icon: LogIn },
+    ];
+
+    return (
+      <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-6" dir="rtl">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <h1 className="flex items-center gap-2 text-lg font-black"><Shield className="text-brand" size={18} /> پنل مدیریت</h1>
+          <Button variant="ghost" onClick={onHome} className="gap-1.5 text-xs"><X size={14} /> خروج</Button>
+        </div>
+
+        <div className="mb-6 flex gap-1 overflow-auto rounded-xl border border-white/5 bg-black/20 p-1">
+          {tabs.map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.id;
+            return (
+              <button key={t.id} onClick={() => setTab(t.id)}
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3.5 py-2 text-xs font-bold transition ${active ? "bg-brand text-white shadow" : "text-muted hover:bg-white/5 hover:text-zinc-200"}`}>
+                <Icon size={13} /> {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {tab === "overview" && <OverviewTab onToast={setToast} />}
+        {tab === "users" && <UsersTab onToast={setToast} />}
+        {tab === "nodes" && <NodesTab onToast={setToast} />}
+        {tab === "live" && <LiveTab />}
+        {tab === "logs" && <LogsTab />}
+
+        {toast && <Toast msg={toast} onClose={() => setToast("")} />}
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Overview
+  // ---------------------------------------------------------------------------
+
+  function OverviewTab({ onToast }: { onToast: (m: string) => void }) {
+    const [data, setData] = useState<AdminOverview | null>(null);
+    const [err, setErr] = useState("");
+    const load = useCallback(() => adminApi.getOverview().then(setData).catch((e: Error) => setErr(e.message)), []);
+    useEffect(() => { load(); }, [load]);
+
+    if (err) return <Card className="p-6 text-sm text-red-300">{err}</Card>;
+    if (!data) return <Card className="p-6 text-sm text-muted">در حال بارگذاری…</Card>;
+
+    const k = data.kpi;
+    const cards = [
+      { label: "کاربران", value: k.total_users, icon: Users },
+      { label: "اشتراک فعال", value: k.active_subs, icon: BadgeCheck },
+      { label: "تسک امروز", value: k.tasks_today, icon: Box },
+      { label: "در انتظار / در حال اجرا", value: `${k.pending} / ${k.running}`, icon: Activity },
+    ];
+
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          {cards.map((c) => {
+            const Icon = c.icon;
+            return (
+              <Card key={c.label} className="p-4">
+                <div className="flex items-center gap-2 text-[11px] font-bold text-muted"><Icon size={13} /> {c.label}</div>
+                <div className="mt-2 text-xl font-black tracking-tight">{c.value}</div>
+              </Card>
+            );
+          })}
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card className="p-4">
+            <div className="mb-3 flex items-center gap-2 text-xs font-extrabold"><HardDrive size={14} className="text-muted" /> موتورها</div>
+            {data.engines.length === 0 ? <p className="text-xs text-muted">موتوری ثبت نشده</p> : (
+              <ul className="space-y-2">
+                {data.engines.map((n) => (
+                  <li key={n.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[.02] px-3 py-2">
+                    <span className="text-xs font-bold">{n.name}</span>
+                    <span className="flex items-center gap-2 text-[11px]">
+                      <span className={`h-2 w-2 rounded-full ${n.is_healthy ? "bg-emerald-400" : "bg-red-400"}`} />
+                      <span className={n.is_healthy ? "text-emerald-300" : "text-red-300"}>{n.is_healthy ? "سالم" : "ناموفق"}</span>
+                      <span className="text-muted">{n.active}/{n.max_concurrency}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+          <Card className="p-4">
+            <div className="mb-3 flex items-center gap-2 text-xs font-extrabold"><Wrench size={14} className="text-muted" /> ورکرها</div>
+            {data.workers.length === 0 ? <p className="text-xs text-muted">ورکری ثبت نشده</p> : (
+              <ul className="space-y-2">
+                {data.workers.map((w) => (
+                  <li key={w.name} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[.02] px-3 py-2">
+                    <span className="text-xs font-bold">{w.name}</span>
+                    <span className="text-[11px] text-muted">{w.status} · {fmtFa(w.last_seen_at)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </div>
+
+        <Card className="overflow-hidden">
+          <div className="border-b border-white/5 px-4 py-3 text-xs font-extrabold">آخرین ورودها</div>
+          <div className="overflow-auto">
+            <table className="w-full min-w-[520px] text-xs">
+              <thead className="bg-white/[.02] text-[11px] text-muted"><tr><th className="px-3 py-2 text-right">کاربر</th><th className="px-3 py-2 text-right">IP</th><th className="px-3 py-2 text-right">زمان</th></tr></thead>
+              <tbody>
+                {data.recent_logins.map((r) => (
+                  <tr key={r.id} className="border-t border-white/5"><td className="px-3 py-2">{r.user_id}</td><td className="px-3 py-2 font-mono text-[11px]">{r.ip ?? "—"}</td><td className="px-3 py-2 text-muted">{fmtFa(r.created_at)}</td></tr>
+                ))}
+                {data.recent_logins.length === 0 && <tr><td colSpan={3} className="px-3 py-6 text-center text-muted">لاگی نیست</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Users
+  // ---------------------------------------------------------------------------
+
+  function UsersTab({ onToast }: { onToast: (m: string) => void }) {
+    const [q, setQ] = useState("");
+    const [rows, setRows] = useState<AdminUserRow[] | null>(null);
+    const [err, setErr] = useState("");
+    const [createOpen, setCreateOpen] = useState(false);
+    const [editRow, setEditRow] = useState<AdminUserRow | null>(null);
+    const [grantRow, setGrantRow] = useState<AdminUserRow | null>(null);
+    const [pwdRow, setPwdRow] = useState<AdminUserRow | null>(null);
+    const [pendingDelete, setPendingDelete] = useState<AdminUserRow | null>(null);
+
+    const load = useCallback(() => {
+      setErr("");
+      adminApi.listUsers(q.trim() || undefined).then(setRows).catch((e: Error) => setErr(e.message));
+    }, [q]);
+    useEffect(() => { load(); }, [load]);
+
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-1 items-center gap-2 rounded-xl border border-white/10 bg-white/[.03] px-3 py-2">
+            <Search size={14} className="text-muted" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="جستجو نام کاربری / موبایل…" className="w-full bg-transparent text-sm outline-none placeholder:text-muted" />
+          </div>
+          <Button onClick={() => setCreateOpen(true)} className="gap-1.5"><Plus size={14} /> کاربر جدید</Button>
+          <Button variant="outline" onClick={load} className="gap-1.5"><RefreshCw size={14} /> بروزرسانی</Button>
+        </div>
+
+        {err && <Card className="p-3 text-sm text-red-300">{err}</Card>}
+
+        <Card className="overflow-hidden">
+          <div className="overflow-auto">
+            <table className="w-full min-w-[760px] text-xs">
+              <thead className="bg-white/[.04] text-[11px] font-bold text-muted">
+                <tr><th className="px-3 py-2.5 text-right">کاربر</th><th className="px-3 py-2.5 text-right">پلن / انقضا</th><th className="px-3 py-2.5 text-right">ایجاد</th><th className="px-3 py-2.5 text-right">آخرین ورود</th><th className="px-3 py-2.5 text-right">وضعیت</th><th className="px-3 py-2.5 text-right">عملیات</th></tr>
+              </thead>
+              <tbody>
+                {!rows ? <tr><td colSpan={6} className="px-3 py-8 text-center text-muted">در حال بارگذاری…</td></tr>
+                  : rows.length === 0 ? <tr><td colSpan={6} className="px-3 py-8 text-center text-muted">موردی یافت نشد</td></tr>
+                    : rows.map((u) => (
+                      <tr key={u.id} className="border-t border-white/5 hover:bg-white/[.02]">
+                        <td className="px-3 py-2.5"><span className="font-bold">{u.username}</span>{u.is_admin && <span className="mr-1.5 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-200">ادمین</span>}<div className="text-[11px] text-muted">{u.phone ?? "—"} {u.telegram_id ? `· tg:${u.telegram_id}` : ""}</div></td>
+                        <td className="px-3 py-2.5"><div className="flex items-center gap-1.5">{planBadge(u.plan)}<span className="text-[11px] text-muted">{fmtFa(u.plan_expires_at)}</span></div></td>
+                        <td className="px-3 py-2.5 text-muted">{fmtFa(u.created_at)}</td>
+                        <td className="px-3 py-2.5 text-muted">{u.last_login_at ? <><span className="font-mono text-[11px]">{u.last_login_ip ?? ""}</span> <span className="text-[11px]">{fmtFa(u.last_login_at)}</span></> : "—"}</td>
+                        <td className="px-3 py-2.5">{u.is_active ? <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-bold text-emerald-200">فعال</span> : <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-[11px] font-bold text-red-200">غیرفعال</span>}</td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex flex-wrap gap-1">
+                            <Button size="sm" variant="outline" onClick={() => setEditRow(u)}>ویرایش</Button>
+                            <Button size="sm" variant="outline" onClick={() => setGrantRow(u)}>پلن</Button>
+                            <Button size="sm" variant="ghost" onClick={() => setPwdRow(u)}><Eye size={12} /> رمز</Button>
+                            <Button size="sm" variant="ghost" onClick={() => setPendingDelete(u)} className="text-red-300"><Trash2 size={12} /></Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        {createOpen && <CreateUserModal onClose={() => setCreateOpen(false)} onDone={() => { setCreateOpen(false); onToast("کاربر ساخته شد"); load(); }} />}
+        {editRow && <EditUserModal row={editRow} onClose={() => setEditRow(null)} onDone={() => { setEditRow(null); onToast("ذخیره شد"); load(); }} />}
+        {grantRow && <GrantModal row={grantRow} onClose={() => setGrantRow(null)} onDone={() => { setGrantRow(null); onToast("پلن اعمال شد"); load(); }} />}
+        {pwdRow && <ResetPwdModal row={pwdRow} onClose={() => setPwdRow(null)} onDone={() => { setPwdRow(null); onToast("رمز تغییر کرد"); }} />}
+        {pendingDelete && <Confirm title="حذف کاربر" body={`آیا ${pendingDelete.username} حذف شود؟ تمام اشتراک‌ها و تسک‌های او پاک می‌شود.`} onCancel={() => setPendingDelete(null)} onConfirm={async () => { try { await adminApi.deleteUser(pendingDelete.id); onToast("حذف شد"); } catch (e) { onToast((e as Error).message); } setPendingDelete(null); load(); }} />}
+      </div>
+    );
+  }
+
+  function CreateUserModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+    const [f, setF] = useState({ username: "", password: "", phone: "", is_admin: false, plan_tier: "pro", plan_days: 30 });
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const submit = async () => {
+      if (!f.username.trim() || f.password.length < 6) { setErr("نام کاربری و رمز (حداقل ۶ کاراکتر) الزامی است"); return; }
+      setBusy(true); setErr("");
+      try { await adminApi.createUser({ username: f.username.trim(), password: f.password, phone: f.phone.trim() || null, is_admin: f.is_admin, plan_tier: f.plan_tier, plan_days: f.plan_days }); onDone(); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          <h3 className="font-black">کاربر جدید</h3>
+          {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+          <div className="mt-4 space-y-3">
+            <input value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} placeholder="نام کاربری *" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <input value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} placeholder="رمز عبور *" type="password" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} placeholder="موبایل (اختیاری)" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <div className="flex gap-2">
+              <select value={f.plan_tier} onChange={(e) => setF({ ...f, plan_tier: e.target.value })} className="flex-1 rounded-xl border border-white/10 bg-zinc-800 px-3 py-2.5">
+                <option value="free">رایگان</option><option value="basic">پایه</option><option value="pro">حرفه‌ای</option><option value="enterprise">سازمانی</option>
+              </select>
+              <input type="number" value={f.plan_days} onChange={(e) => setF({ ...f, plan_days: Number(e.target.value) || 0 })} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
+            </div>
+            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={f.is_admin} onChange={(e) => setF({ ...f, is_admin: e.target.checked })} /> ادمین</label>
+          </div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "ایجاد"}</Button></div>
+        </div>
+      </div>
+    );
+  }
+
+  function EditUserModal({ row, onClose, onDone }: { row: AdminUserRow; onClose: () => void; onDone: () => void }) {
+    const [f, setF] = useState({ username: row.username, phone: row.phone ?? "", is_active: row.is_active, is_admin: row.is_admin });
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const submit = async () => {
+      setBusy(true); setErr("");
+      try { await adminApi.updateUser(row.id, { username: f.username.trim(), phone: f.phone.trim() || null, is_active: f.is_active, is_admin: f.is_admin }); onDone(); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          <h3 className="font-black">ویرایش {row.username}</h3>
+          {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+          <div className="mt-4 space-y-3">
+            <input value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} placeholder="موبایل" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={f.is_active} onChange={(e) => setF({ ...f, is_active: e.target.checked })} /> فعال</label>
+            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={f.is_admin} onChange={(e) => setF({ ...f, is_admin: e.target.checked })} /> ادمین</label>
+          </div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "ذخیره"}</Button></div>
+        </div>
+      </div>
+    );
+  }
+
+  function GrantModal({ row, onClose, onDone }: { row: AdminUserRow; onClose: () => void; onDone: () => void }) {
+    const [tier, setTier] = useState("pro");
+    const [days, setDays] = useState(30);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const submit = async () => {
+      setBusy(true); setErr("");
+      try { await adminApi.grantPlan(row.id, tier, days); onDone(); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          <h3 className="font-black">اعطای پلن به {row.username}</h3>
+          <p className="mt-1 text-xs text-muted">فعلی: {row.plan} · انقضا {fmtFa(row.plan_expires_at)}</p>
+          {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+          <div className="mt-4 flex gap-2">
+            <select value={tier} onChange={(e) => setTier(e.target.value)} className="flex-1 rounded-xl border border-white/10 bg-zinc-800 px-3 py-2.5">
+              <option value="basic">پایه</option><option value="pro">حرفه‌ای</option><option value="enterprise">سازمانی</option>
+            </select>
+            <input type="number" value={days} onChange={(e) => setDays(Number(e.target.value) || 0)} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
+          </div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "اعطا"}</Button></div>
+        </div>
+      </div>
+    );
+  }
+
+  function ResetPwdModal({ row, onClose, onDone }: { row: AdminUserRow; onClose: () => void; onDone: () => void }) {
+    const [pwd, setPwd] = useState("");
+    const [show, setShow] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const submit = async () => {
+      if (pwd.length < 6) { setErr("حداقل ۶ کاراکتر"); return; }
+      setBusy(true); setErr("");
+      try { await adminApi.resetPassword(row.id, pwd); onDone(); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          <h3 className="font-black">تغییر رمز {row.username}</h3>
+          {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+          <div className="mt-4 flex gap-2">
+            <input value={pwd} onChange={(e) => setPwd(e.target.value)} type={show ? "text" : "password"} placeholder="رمز جدید" className="flex-1 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <button onClick={() => setShow((v) => !v)} className="rounded-xl border border-white/10 px-3">{show ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+          </div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "ذخیره"}</Button></div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Nodes
+  // ---------------------------------------------------------------------------
+
+  function NodesTab({ onToast }: { onToast: (m: string) => void }) {
+    const [fleet, setFleet] = useState<EngineRow[] | null>(null);
+    const [workers, setWorkers] = useState<import("@/api/admin").WorkerRow[] | null>(null);
+    const [err, setErr] = useState("");
+    const [addOpen, setAddOpen] = useState(false);
+    const [editNode, setEditNode] = useState<EngineRow | null>(null);
+    const [pendingDelete, setPendingDelete] = useState<number | null>(null);
+
+    const load = useCallback(() => {
+      adminApi.listFleet().then(setFleet).catch((e: Error) => setErr(e.message));
+      adminApi.listWorkers().then(setWorkers).catch(() => setWorkers([]));
+    }, []);
+    useEffect(() => { load(); }, [load]);
+
+    const copySnippet = async () => {
+      const snippet = `BROKER_URL=redis://CENTRAL_IP:6379 \
+ENGINE_URL=http://CENTRAL_IP:8899 \
+ENGINE_API_KEY=\$VIBE_ENGINE_API_KEY \
+DATABASE_URL=postgresql+asyncpg://vt:PASS@CENTRAL_IP:5432/vibetrader \
+WORKER_NAME=worker-eu-1 \
+docker compose -f docker-compose.worker.yml up -d --build`;
+      await navigator.clipboard.writeText(snippet);
+      onToast("snippet کپی شد");
+    };
+
+    return (
+      <div className="space-y-4">
+        {err && <Card className="p-3 text-sm text-red-300">{err}</Card>}
+
+        <Card className="p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="flex items-center gap-2 text-sm font-black"><Server size={14} /> موتورها (Engine Nodes)</h3>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={copySnippet} className="gap-1.5 text-xs"><Copy size={12} /> snippet ورکر راه دور</Button>
+              <Button onClick={() => setAddOpen(true)} className="gap-1.5"><Plus size={14} /> افزودن موتور</Button>
+              <Button variant="ghost" onClick={load}><RefreshCw size={14} /></Button>
+            </div>
+          </div>
+          {!fleet ? <p className="text-xs text-muted">در حال بارگذاری…</p> : fleet.length === 0 ? <p className="text-xs text-muted">موتوری ثبت نشده — موتور پیش‌فرض در بک‌اند ساخته می‌شود.</p> : (
+            <div className="overflow-auto">
+              <table className="w-full min-w-[720px] text-xs">
+                <thead className="bg-white/[.04] text-[11px] text-muted"><tr><th className="px-3 py-2 text-right">نام</th><th className="px-3 py-2 text-right">URL</th><th className="px-3 py-2 text-right">سلامت</th><th className="px-3 py-2 text-right">ظرفیت</th><th className="px-3 py-2 text-right">فعال</th><th className="px-3 py-2 text-right">عملیات</th></tr></thead>
+                <tbody>
+                  {fleet.map((n) => (
+                    <tr key={n.id} className="border-t border-white/5">
+                      <td className="px-3 py-2.5 font-bold">{n.name} {n.region && <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">{n.region}</span>}</td>
+                      <td className="px-3 py-2.5 font-mono text-[11px]">{n.url}</td>
+                      <td className="px-3 py-2.5"><span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ${n.is_healthy ? "bg-emerald-500/15 text-emerald-200" : "bg-red-500/15 text-red-200"}`}>{n.is_healthy ? "سالم" : "خطا"} {n.fail_count ? `(${n.fail_count})` : ""}</span><div className="max-w-[220px] truncate text-[10px] text-muted">{n.last_health_detail ?? ""}</div></td>
+                      <td className="px-3 py-2.5">{n.active}/{n.max_concurrency}</td>
+                      <td className="px-3 py-2.5">{n.is_enabled ? "فعال" : "غیرفعال"}</td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex gap-1">
+                          <Button size="sm" variant="outline" onClick={async () => { try { await adminApi.recheckFleet(n.id); onToast("بررسی شد"); load(); } catch (e) { onToast((e as Error).message); } }}>بررسی</Button>
+                          <Button size="sm" variant="outline" onClick={() => setEditNode(n)}>ویرایش</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setPendingDelete(n.id)} className="text-red-300"><Trash2 size={12} /></Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+
+        <Card className="p-4">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-black"><Wrench size={14} /> ورکرها</h3>
+          {!workers ? <p className="text-xs text-muted">در حال بارگذاری…</p> : workers.length === 0 ? <p className="text-xs text-muted">ورکری ثبت نشده</p> : (
+            <div className="overflow-auto">
+              <table className="w-full min-w-[520px] text-xs">
+                <thead className="bg-white/[.04] text-[11px] text-muted"><tr><th className="px-3 py-2 text-right">نام</th><th className="px-3 py-2 text-right">وضعیت</th><th className="px-3 py-2 text-right">آخرین حضور</th></tr></thead>
+                <tbody>
+                  {workers.map((w) => (
+                    <tr key={w.name} className="border-t border-white/5"><td className="px-3 py-2.5 font-bold">{w.name}</td><td className="px-3 py-2.5">{w.status}</td><td className="px-3 py-2.5 text-muted">{fmtFa(w.last_seen_at)}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="mt-3 text-[11px] leading-5 text-muted">برای افزودن ورکر جدید روی سرور دیگر، متغیرهای <code className="rounded bg-white/10 px-1 font-mono">BROKER_URL / ENGINE_URL / DATABASE_URL</code> را ست کنید و <code className="rounded bg-white/10 px-1 font-mono">docker compose -f docker-compose.worker.yml up -d</code> را اجرا کنید.</p>
+        </Card>
+
+        {addOpen && <FleetModal onClose={() => setAddOpen(false)} onDone={() => { setAddOpen(false); load(); onToast("موتور افزوده شد"); }} />}
+        {editNode && <FleetModal node={editNode} onClose={() => setEditNode(null)} onDone={() => { setEditNode(null); load(); onToast("ذخیره شد"); }} />}
+        {pendingDelete !== null && <Confirm title="حذف موتور" body="این موتور از fleet حذف شود؟ تسک‌های در حال اجرا قطع نمی‌شوند." onCancel={() => setPendingDelete(null)} onConfirm={async () => { try { await adminApi.deleteFleet(pendingDelete); onToast("حذف شد"); } catch (e) { onToast((e as Error).message); } setPendingDelete(null); load(); }} />}
+      </div>
+    );
+  }
+
+  function FleetModal({ node, onClose, onDone }: { node?: EngineRow; onClose: () => void; onDone: () => void }) {
+    const [f, setF] = useState({ name: node?.name ?? "", url: node?.url ?? "", api_key: "", region: node?.region ?? "", max_concurrency: node?.max_concurrency ?? 10, is_enabled: node?.is_enabled ?? true });
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const submit = async () => {
+      if (!f.name.trim() || !f.url.trim()) { setErr("نام و URL الزامی است"); return; }
+      setBusy(true); setErr("");
+      try {
+        const payload = { name: f.name.trim(), url: f.url.trim(), api_key: f.api_key.trim() || null, region: f.region.trim() || null, max_concurrency: f.max_concurrency, is_enabled: f.is_enabled };
+        if (node) await adminApi.updateFleet(node.id, payload);
+        else await adminApi.addFleet(payload);
+        onDone();
+      } catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          <h3 className="font-black">{node ? "ویرایش موتور" : "افزودن موتور"}</h3>
+          {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+          <div className="mt-4 space-y-3">
+            <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="نام (engine-eu-1)" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <input value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} placeholder="URL (http://HOST:8899)" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 font-mono text-xs outline-none" dir="ltr" />
+            <input value={f.api_key} onChange={(e) => setF({ ...f, api_key: e.target.value })} placeholder="API Key (اختیاری — خالی = سراسری)" type="password" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <div className="flex gap-2">
+              <input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} placeholder="region (اختیاری)" className="flex-1 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+              <input type="number" value={f.max_concurrency} onChange={(e) => setF({ ...f, max_concurrency: Number(e.target.value) || 0 })} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
+            </div>
+            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={f.is_enabled} onChange={(e) => setF({ ...f, is_enabled: e.target.checked })} /> فعال</label>
+          </div>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : node ? "ذخیره" : "افزودن"}</Button></div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live
+  // ---------------------------------------------------------------------------
+
+  function LiveTab() {
+    const [data, setData] = useState<MonitorSummary | null>(null);
+    const [err, setErr] = useState("");
+    const timer = useRef<number | null>(null);
+    const load = useCallback(() => adminApi.getMonitor().then(setData).catch((e: Error) => setErr(e.message)), []);
+    useEffect(() => { load(); timer.current = window.setInterval(load, 5000); return () => { if (timer.current) clearInterval(timer.current); }; }, [load]);
+
+    if (err) return <Card className="p-6 text-sm text-red-300">{err}</Card>;
+    if (!data) return <Card className="p-6 text-sm text-muted">در حال بارگذاری…</Card>;
+
+    const t = data.tasks;
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">صف (queue_depth)</div><div className="mt-1 text-xl font-black">{t.queue_depth ?? "—"}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">در انتظار</div><div className="mt-1 text-xl font-black text-amber-200">{t.pending}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">در حال اجرا</div><div className="mt-1 text-xl font-black text-sky-200">{t.running}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">تکمیل شده</div><div className="mt-1 text-xl font-black text-emerald-200">{t.completed}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">ناموفق</div><div className="mt-1 text-xl font-black text-red-200">{t.failed}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">کل / امروز</div><div className="mt-1 text-xl font-black">{t.total} / {t.today}</div></Card>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card className="p-4">
+            <div className="mb-3 text-xs font-extrabold">موتورها (inflight)</div>
+            <ul className="space-y-2">
+              {data.engines.map((n) => (
+                <li key={n.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[.02] px-3 py-2 text-xs">
+                  <span className="font-bold">{n.name}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${n.is_healthy ? "bg-emerald-500/15 text-emerald-200" : "bg-red-500/15 text-red-200"}`}>{n.is_healthy ? "سالم" : "خطا"}</span>
+                  <span className="text-muted">{n.active}</span>
+                </li>
+              ))}
+              {data.engines.length === 0 && <li className="text-xs text-muted">موتوری نیست</li>}
+            </ul>
+          </Card>
+          <Card className="p-4">
+            <div className="mb-3 text-xs font-extrabold">ورکرها</div>
+            <ul className="space-y-2">
+              {data.workers.map((w) => (
+                <li key={w.name} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[.02] px-3 py-2 text-xs">
+                  <span className="font-bold">{w.name}</span>
+                  <span className="text-muted">{w.status}</span>
+                </li>
+              ))}
+              {data.workers.length === 0 && <li className="text-xs text-muted">ورکری نیست</li>}
+            </ul>
+          </Card>
+        </div>
+
+        <p className="text-center text-[11px] text-muted">بروزرسانی خودکار هر ۵ ثانیه · snapshot زنده از DB + Redis</p>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Logs
+  // ---------------------------------------------------------------------------
+
+  function LogsTab() {
+    const [rows, setRows] = useState<Array<{ id: number; user_id: number; ip: string | null; user_agent: string; created_at: string | null }> | null>(null);
+    const [err, setErr] = useState("");
+    const [filter, setFilter] = useState("");
+    const load = useCallback(() => {
+      const uid = filter.trim() ? Number(filter.trim()) : undefined;
+      adminApi.getLoginLogs(Number.isFinite(uid as number) ? uid : undefined).then(setRows).catch((e: Error) => setErr(e.message));
+    }, [filter]);
+    useEffect(() => { load(); }, [load]);
+
+    return (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="فیلتر user_id (خالی = همه)" className="w-44 rounded-xl border border-white/10 bg-white/[.03] px-3 py-2 text-sm outline-none" />
+          <Button variant="outline" onClick={load} className="gap-1.5"><RefreshCw size={14} /> بروزرسانی</Button>
+        </div>
+        {err && <Card className="p-3 text-sm text-red-300">{err}</Card>}
+        <Card className="overflow-hidden">
+          <div className="overflow-auto">
+            <table className="w-full min-w-[640px] text-xs">
+              <thead className="bg-white/[.04] text-[11px] text-muted"><tr><th className="px-3 py-2 text-right">#</th><th className="px-3 py-2 text-right">user_id</th><th className="px-3 py-2 text-right">IP</th><th className="px-3 py-2 text-right">User-Agent</th><th className="px-3 py-2 text-right">زمان</th></tr></thead>
+              <tbody>
+                {!rows ? <tr><td colSpan={5} className="px-3 py-8 text-center text-muted">در حال بارگذاری…</td></tr>
+                  : rows.length === 0 ? <tr><td colSpan={5} className="px-3 py-8 text-center text-muted">لاگی نیست</td></tr>
+                    : rows.map((r) => (
+                      <tr key={r.id} className="border-t border-white/5"><td className="px-3 py-2 text-muted">{r.id}</td><td className="px-3 py-2 font-bold">{r.user_id}</td><td className="px-3 py-2 font-mono text-[11px]">{r.ip ?? "—"}</td><td className="px-3 py-2 max-w-[360px] truncate text-muted">{r.user_agent || "—"}</td><td className="px-3 py-2 text-muted">{fmtFa(r.created_at)}</td></tr>
+                    ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    );
+  }

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -23,7 +23,7 @@ from shared.config import get_settings
 from shared.models import (
     init_db, get_db, User, Subscription, Task, VibeSession,
     UsageLog, SwarmRun, PlanTier, SubscriptionStatus, TaskStatus, _utcnow,
-    EngineNode, WorkerNode, Payment, SettingKV
+    EngineNode, WorkerNode, Payment, SettingKV, LoginLog
 )
 from app.fleet import EnginePool, get_engine_pool, start_background_loops, stop_background_loops
 from shared.security import (
@@ -306,6 +306,13 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.refresh(user)
 
     token = create_access_token({"sub": user.id, "username": user.username})
+    try:
+        _ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+        _ua = request.headers.get("user-agent", "")[:500]
+        db.add(LoginLog(user_id=user.id, ip=_ip, user_agent=_ua))
+        await db.commit()
+    except Exception:
+        await db.rollback()
     return TokenResponse(
         access_token=token,
         user_id=user.id,
@@ -315,13 +322,20 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/api/v1/auth/login", response_model=TokenResponse)
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.username == req.username))
     user = result.scalar_one_or_none()
     if not user or not verify_password(req.password, user.hashed_password):
         raise HTTPException(401, "نام کاربری یا رمز عبور اشتباه است")
 
     token = create_access_token({"sub": user.id, "username": user.username})
+    try:
+        _ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+        _ua = request.headers.get("user-agent", "")[:500]
+        db.add(LoginLog(user_id=user.id, ip=_ip, user_agent=_ua))
+        await db.commit()
+    except Exception:
+        await db.rollback()
     return TokenResponse(
         access_token=token,
         user_id=user.id,
@@ -644,41 +658,249 @@ async def update_llm_settings(
 
 
 # ============================================================================
-# Admin Routes
+# Admin — dependency
 # ============================================================================
+
+async def _require_admin(user: User = Depends(require_auth)) -> User:
+    if not user.is_admin:
+        raise HTTPException(403, "فقط ادمین")
+    if not user.is_active:
+        raise HTTPException(403, "حساب شما غیرفعال است")
+    return user
+
+
+# ============================================================================
+# Admin — Overview / Monitoring
+# ============================================================================
+
+@app.get("/api/v1/admin/overview")
+async def admin_overview(
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Single-call dashboard payload: KPIs + engine/worker health + recent logins."""
+    total_users = (await db.execute(select(func.count()).select_from(User))).scalar() or 0
+    active_subs = (await db.execute(
+        select(func.count()).select_from(Subscription).where(
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.expires_at > _utcnow(),
+        )
+    )).scalar() or 0
+    today0 = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    tasks_today = (await db.execute(select(func.count()).select_from(Task).where(Task.created_at >= today0))).scalar() or 0
+    pending = (await db.execute(select(func.count()).select_from(Task).where(Task.status == TaskStatus.PENDING))).scalar() or 0
+    running = (await db.execute(select(func.count()).select_from(Task).where(Task.status == TaskStatus.RUNNING))).scalar() or 0
+    engines = (await db.execute(select(EngineNode).order_by(EngineNode.id))).scalars().all()
+    workers = (await db.execute(select(WorkerNode).order_by(WorkerNode.name))).scalars().all()
+    recent_logins = (await db.execute(select(LoginLog).order_by(LoginLog.created_at.desc()).limit(10))).scalars().all()
+    by_type: dict[str, int] = {}
+    for tt in ("backtest", "swarm", "chat"):
+        by_type[tt] = (await db.execute(select(func.count()).select_from(Task).where(Task.task_type == tt))).scalar() or 0
+    return {
+        "kpi": {"total_users": total_users, "active_subs": active_subs, "tasks_today": tasks_today, "pending": pending, "running": running, "by_type": by_type},
+        "engines": [{"id": n.id, "name": n.name, "url": n.url, "is_healthy": n.is_healthy, "is_enabled": n.is_enabled, "active": n.active_concurrency, "max_concurrency": n.max_concurrency, "last_health_detail": n.last_health_detail} for n in engines],
+        "workers": [{"name": w.name, "status": w.status, "last_seen_at": w.last_seen_at.isoformat() if w.last_seen_at else None} for w in workers],
+        "recent_logins": [{"id": r.id, "user_id": r.user_id, "ip": r.ip, "user_agent": (r.user_agent or "")[:120], "created_at": r.created_at.isoformat() if r.created_at else None} for r in recent_logins],
+    }
+
+
+@app.get("/api/v1/admin/monitor/summary")
+async def admin_monitor_summary(
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    today0 = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    total = (await db.execute(select(func.count()).select_from(Task))).scalar() or 0
+    today_c = (await db.execute(select(func.count()).select_from(Task).where(Task.created_at >= today0))).scalar() or 0
+    pending = (await db.execute(select(func.count()).select_from(Task).where(Task.status == TaskStatus.PENDING))).scalar() or 0
+    running = (await db.execute(select(func.count()).select_from(Task).where(Task.status == TaskStatus.RUNNING))).scalar() or 0
+    completed = (await db.execute(select(func.count()).select_from(Task).where(Task.status == TaskStatus.COMPLETED))).scalar() or 0
+    failed = (await db.execute(select(func.count()).select_from(Task).where(Task.status == TaskStatus.FAILED))).scalar() or 0
+    engines = (await db.execute(select(EngineNode))).scalars().all()
+    workers = (await db.execute(select(WorkerNode))).scalars().all()
+    qdepth = None
+    try:
+        import redis.asyncio as _redis
+        settings = get_settings()
+        r = _redis.from_url(settings.REDIS_URL, decode_responses=True)
+        qdepth = await r.zcard("arq:queue")  # type: ignore
+        await r.aclose()
+    except Exception:
+        pass
+    return {
+        "tasks": {"total": total, "today": today_c, "pending": pending, "running": running, "completed": completed, "failed": failed, "queue_depth": qdepth},
+        "engines": [{"id": n.id, "name": n.name, "is_healthy": n.is_healthy, "is_enabled": n.is_enabled, "active": n.active_concurrency} for n in engines],
+        "workers": [{"name": w.name, "status": w.status, "last_seen_at": w.last_seen_at.isoformat() if w.last_seen_at else None} for w in workers],
+    }
+
+
+# ============================================================================
+# Admin — Users (full CRUD + audit)
+# ============================================================================
+
+class AdminUserCreate(BaseModel):
+    username: str
+    password: str
+    phone: str | None = None
+    is_admin: bool = False
+    is_active: bool = True
+    plan_tier: str | None = None
+    plan_days: int = 30
+
+
+class AdminUserUpdate(BaseModel):
+    username: str | None = None
+    phone: str | None = None
+    is_active: bool | None = None
+    is_admin: bool | None = None
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str
+
 
 @app.get("/api/v1/admin/users")
 async def admin_list_users(
-    user: User = Depends(require_auth),
+    q: str | None = Query(None, description="search username/phone"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    admin: User = Depends(_require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if not user.is_admin:
-        raise HTTPException(403, "فقط ادمین")
-    result = await db.execute(select(User))
-    users = result.scalars().all()
-    return [
-        {
-            "id": u.id,
-            "username": u.username,
-            "telegram_id": u.telegram_id,
-            "plan": u.current_plan.value,
-            "is_active": u.is_active,
+    stmt = select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+    if q:
+        like = f"%{q}%"
+        stmt = select(User).where((User.username.ilike(like)) | (User.phone.ilike(like))).order_by(User.created_at.desc()).limit(limit).offset(offset)
+    rows = (await db.execute(stmt)).scalars().all()
+    out = []
+    for u in rows:
+        now = _utcnow()
+        best = None
+        for s in (u.subscriptions or []):
+            if s.status == SubscriptionStatus.ACTIVE and s.expires_at and s.expires_at > now:
+                if best is None or s.expires_at > best.expires_at:
+                    best = s
+        last_login = (await db.execute(select(LoginLog).where(LoginLog.user_id == u.id).order_by(LoginLog.created_at.desc()).limit(1))).scalar_one_or_none()
+        out.append({
+            "id": u.id, "username": u.username, "phone": u.phone, "telegram_id": u.telegram_id,
+            "is_active": u.is_active, "is_admin": u.is_admin,
+            "plan": (best.plan_tier.value if best else PlanTier.FREE.value),
+            "plan_expires_at": best.expires_at.isoformat() if best and best.expires_at else None,
             "created_at": u.created_at.isoformat() if u.created_at else None,
-        }
-        for u in users
-    ]
+            "last_login_at": last_login.created_at.isoformat() if last_login and last_login.created_at else None,
+            "last_login_ip": last_login.ip if last_login else None,
+        })
+    return out
+
+
+@app.post("/api/v1/admin/users")
+async def admin_create_user(req: AdminUserCreate, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    if (await db.execute(select(User).where(User.username == req.username))).scalar_one_or_none():
+        raise HTTPException(400, "نام کاربری تکراری است")
+    u = User(username=req.username, hashed_password=hash_password(req.password), phone=req.phone, is_admin=req.is_admin, is_active=req.is_active)
+    db.add(u)
+    await db.flush()
+    if req.plan_tier and req.plan_tier != "free":
+        db.add(Subscription(user_id=u.id, plan_tier=PlanTier(req.plan_tier), status=SubscriptionStatus.ACTIVE, expires_at=_utcnow() + timedelta(days=req.plan_days)))
+    else:
+        db.add(Subscription(user_id=u.id, plan_tier=PlanTier.FREE, status=SubscriptionStatus.ACTIVE, expires_at=_utcnow() + timedelta(days=365*10)))
+    await db.commit()
+    await db.refresh(u)
+    return {"id": u.id, "username": u.username}
+
+
+@app.get("/api/v1/admin/users/{user_id}")
+async def admin_get_user(user_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404, "کاربر یافت نشد")
+    now = _utcnow()
+    best = None
+    for s in (u.subscriptions or []):
+        if s.status == SubscriptionStatus.ACTIVE and s.expires_at and s.expires_at > now:
+            if best is None or s.expires_at > best.expires_at:
+                best = s
+    subs = [{"id": s.id, "plan": s.plan_tier.value, "status": s.status.value if hasattr(s.status, "value") else str(s.status), "expires_at": s.expires_at.isoformat() if s.expires_at else None} for s in (u.subscriptions or [])]
+    last_login = (await db.execute(select(LoginLog).where(LoginLog.user_id == u.id).order_by(LoginLog.created_at.desc()).limit(1))).scalar_one_or_none()
+    return {"id": u.id, "username": u.username, "phone": u.phone, "telegram_id": u.telegram_id, "is_active": u.is_active, "is_admin": u.is_admin,
+            "plan": (best.plan_tier.value if best else PlanTier.FREE.value), "plan_expires_at": best.expires_at.isoformat() if best and best.expires_at else None,
+            "created_at": u.created_at.isoformat() if u.created_at else None, "last_login_at": last_login.created_at.isoformat() if last_login and last_login.created_at else None, "subscriptions": subs}
+
+
+@app.put("/api/v1/admin/users/{user_id}")
+async def admin_update_user(user_id: int, req: AdminUserUpdate, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404, "کاربر یافت نشد")
+    if req.username is not None and req.username != u.username:
+        if (await db.execute(select(User).where(User.username == req.username))).scalar_one_or_none():
+            raise HTTPException(400, "نام کاربری تکراری است")
+        u.username = req.username
+    if req.phone is not None:
+        u.phone = req.phone
+    if req.is_active is not None:
+        if u.id == admin.id and req.is_active is False:
+            raise HTTPException(400, "نمی‌توانید خودتان را غیرفعال کنید")
+        u.is_active = req.is_active
+    if req.is_admin is not None:
+        u.is_admin = req.is_admin
+    await db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/v1/admin/users/{user_id}")
+async def admin_delete_user(user_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    if user_id == admin.id:
+        raise HTTPException(400, "نمی‌توانید خودتان را حذف کنید")
+    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404, "کاربر یافت نشد")
+    from sqlalchemy import delete as _delete
+    await db.execute(_delete(LoginLog).where(LoginLog.user_id == user_id))
+    await db.execute(_delete(Payment).where(Payment.user_id == user_id))
+    await db.execute(_delete(UsageLog).where(UsageLog.user_id == user_id))
+    await db.execute(_delete(Task).where(Task.user_id == user_id))
+    await db.execute(_delete(VibeSession).where(VibeSession.user_id == user_id))
+    await db.execute(_delete(SwarmRun).where(SwarmRun.user_id == user_id))
+    await db.execute(_delete(Subscription).where(Subscription.user_id == user_id))
+    await db.delete(u)
+    await db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: int, req: AdminPasswordReset, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404, "کاربر یافت نشد")
+    if len(req.new_password) < 6:
+        raise HTTPException(400, "رمز عبور باید حداقل ۶ کاراکتر باشد")
+    u.hashed_password = hash_password(req.new_password)
+    await db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/v1/admin/login-logs")
+async def admin_login_logs(
+    user_id: int | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(LoginLog).order_by(LoginLog.created_at.desc()).limit(limit).offset(offset)
+    if user_id:
+        stmt = select(LoginLog).where(LoginLog.user_id == user_id).order_by(LoginLog.created_at.desc()).limit(limit).offset(offset)
+    rows = (await db.execute(stmt)).scalars().all()
+    return [{"id": r.id, "user_id": r.user_id, "ip": r.ip, "user_agent": (r.user_agent or "")[:160], "created_at": r.created_at.isoformat() if r.created_at else None} for r in rows]
 
 
 @app.get("/api/v1/admin/tasks")
 async def admin_list_tasks(
-    user: User = Depends(require_auth),
+    admin: User = Depends(_require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    if not user.is_admin:
-        raise HTTPException(403, "فقط ادمین")
-    result = await db.execute(
-        select(Task).order_by(Task.created_at.desc()).limit(100)
-    )
+    result = await db.execute(select(Task).order_by(Task.created_at.desc()).limit(100))
     return result.scalars().all()
 
 

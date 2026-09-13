@@ -2,7 +2,7 @@ import { motion, type HTMLMotionProps } from "framer-motion";
 import { forwardRef } from "react";
 import { cn } from "@/lib/utils";
 
-type Variant = "primary" | "ghost" | "outline";
+type Variant = "primary" | "ghost" | "outline" | "destructive";
 type Size = "sm" | "md" | "lg";
 
 const variants: Record<Variant, string> = {
@@ -10,6 +10,7 @@ const variants: Record<Variant, string> = {
     "bg-gradient-to-l from-brand-deep via-brand to-brand-soft text-white shadow-[0_8px_24px_-6px_rgba(99,102,241,.5)] hover:shadow-[0_12px_32px_-6px_rgba(99,102,241,.65)]",
   ghost: "text-muted hover:text-ink hover:bg-white/5",
   outline: "border border-line bg-white/[.03] text-ink hover:bg-white/[.06] hover:border-brand/40",
+  destructive: "bg-red-500/90 text-white hover:bg-red-500 shadow-[0_8px_24px_-6px_rgba(239,68,68,.5)]",
 };
 
 const sizes: Record<Size, string> = {
