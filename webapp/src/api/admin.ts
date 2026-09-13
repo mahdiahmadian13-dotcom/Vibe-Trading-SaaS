@@ -74,3 +74,23 @@ export const createServer = (body: { name: string; region?: string | null; desir
 export const deleteServer = (id: number) => api<{ ok: boolean }>(`/api/v1/admin/servers/${id}`, { method: "DELETE" });
 export const scaleServer = (id: number, body: { desired_workers: number; worker_concurrency?: number; cpu_limit?: string; mem_limit?: string }) =>
   api<{ ok: boolean; desired_workers: number }>(`/api/v1/admin/servers/${id}/scale`, { method: "POST", body: JSON.stringify(body) });
+
+
+  // ---------------------------------------------------------------------------
+  // Rich monitoring (/admin/monitor/full)
+  // ---------------------------------------------------------------------------
+  export type MonitorFull = {
+    tasks_1h: number; failed_1h: number; queue_depth: number | null;
+    per_server: { id: number; name: string; region: string | null; status: string;
+      desired_workers: number; online_workers: number; registered_workers: number;
+      tasks_1h: number; failed_1h: number; cpu_limit: string | null; mem_limit: string | null;
+      host: { cpu_count?: number; mem_total_gb?: number; disk_total_gb?: number; disk_used_pct?: number; hostname?: string };
+      docker_ok: boolean; last_heartbeat_at: string | null }[];
+    per_worker: { name: string; server: string; total: number; completed: number; failed: number;
+      running: number; pending: number; avg_sec: number | null; success_pct: number }[];
+    series_15min: { t: number; total: number; completed: number; failed: number }[];
+    recent: { task_id: string; type: string; status: string | null; worker: string | null; server: string;
+      user: number; created_at: string | null; duration_sec: number | null; error: string | null }[];
+    ts: string;
+  };
+  export const getMonitorFull = () => api<MonitorFull>("/api/v1/admin/monitor/full");

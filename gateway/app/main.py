@@ -734,6 +734,135 @@ async def admin_monitor_summary(
         "workers": [{"name": w.name, "status": w.status, "last_seen_at": w.last_seen_at.isoformat() if w.last_seen_at else None} for w in workers],
     }
 
+@app.get("/api/v1/admin/monitor/full")
+async def admin_monitor_full(
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rich monitoring: per-server / per-worker task stats + live queue + resources."""
+    now = _utcnow()
+    from datetime import timedelta as _td
+    hour_ago_dt = now - _td(hours=1)
+
+    # ---- tasks in the last hour, grouped per worker (who got what) ----
+    rows = (await db.execute(
+        select(Task.worker_name, Task.status, Task.task_type, Task.started_at, Task.completed_at, Task.error_message)
+        .where(Task.created_at >= hour_ago_dt)
+    )).all()
+
+    workers = (await db.execute(select(WorkerNode))).scalars().all()
+    servers = (await db.execute(select(ServerNode).order_by(ServerNode.id))).scalars().all()
+
+    # worker -> server mapping: name prefix BEFORE first "-" after server name, or exact server name
+    def worker_server(wname: str | None) -> str:
+        if not wname:
+            return "unassigned"
+        for s in servers:
+            if wname == s.name or wname.startswith(s.name + "-"):
+                return s.name
+        return "central"
+
+    per_worker: dict = {}
+    for wn, st, tt, sat, cat, emsg in rows:
+        key = wn or "(none)"
+        d = per_worker.setdefault(key, {"server": worker_server(wn), "total": 0, "completed": 0,
+                                        "failed": 0, "running": 0, "pending": 0, "durations": []})
+        d["total"] += 1
+        if st == TaskStatus.COMPLETED:
+            d["completed"] += 1
+        elif st == TaskStatus.FAILED:
+            d["failed"] += 1
+        elif st == TaskStatus.RUNNING:
+            d["running"] += 1
+        elif st == TaskStatus.PENDING:
+            d["pending"] += 1
+        if sat and cat and (st == TaskStatus.COMPLETED or st == TaskStatus.FAILED):
+            d["durations"].append((cat - sat).total_seconds())
+    for d in per_worker.values():
+        dur = d.pop("durations")
+        d["avg_sec"] = round(sum(dur) / len(dur), 2) if dur else None
+        d["success_pct"] = round(d["completed"] * 100 / d["total"], 1) if d["total"] else 0
+
+    # ---- per-server rollup (tasks + worker counts + resources from heartbeat) ----
+    per_server = []
+    for s in servers:
+        sworkers = [w for w in workers if w.name == s.name or w.name.startswith(s.name + "-")]
+        online = [w for w in sworkers if w.status == "ready"]
+        t_stats = [per_worker[w.name] for w in sworkers if w.name in per_worker]
+        tasks_total = sum(t["total"] for t in t_stats)
+        tasks_failed = sum(t["failed"] for t in t_stats)
+        hi = s.host_info or {}
+        per_server.append({
+            "id": s.id, "name": s.name, "region": s.region,
+            "status": s.status, "desired_workers": s.desired_workers,
+            "online_workers": len(online), "registered_workers": len(sworkers),
+            "tasks_1h": tasks_total, "failed_1h": tasks_failed,
+            "cpu_limit": s.cpu_limit, "mem_limit": s.mem_limit,
+            "host": {"cpu_count": hi.get("cpu_count"), "mem_total_gb": hi.get("mem_total_gb"),
+                     "disk_total_gb": hi.get("disk_total_gb"), "disk_used_pct": hi.get("disk_used_pct"),
+                     "hostname": hi.get("hostname")},
+            "docker_ok": s.docker_ok, "last_heartbeat_at": s.last_heartbeat_at.isoformat() if s.last_heartbeat_at else None,
+        })
+
+    # central workers (not on any server)
+    central = [w for w in workers if worker_server(w.name) == "central"]
+    c_online = [w for w in central if w.status == "ready"]
+    c_stats = [per_worker[w.name] for w in central if w.name in per_worker]
+    per_server.insert(0, {
+        "id": 0, "name": "central", "region": None,
+        "status": "online" if c_online else "idle", "desired_workers": len(c_online),
+        "online_workers": len(c_online), "registered_workers": len(central),
+        "tasks_1h": sum(t["total"] for t in c_stats), "failed_1h": sum(t["failed"] for t in c_stats),
+        "cpu_limit": None, "mem_limit": None, "host": {}, "docker_ok": True,
+        "last_heartbeat_at": None,
+    })
+
+    # ---- 15-min bucket series (last hour) for throughput chart ----
+    buckets: dict = {}
+    for wn, st, tt, sat, cat, emsg in rows:
+        ts = (sat or cat or now).timestamp()
+        b = int(ts // 300) * 300
+        buckets.setdefault(b, {"total": 0, "completed": 0, "failed": 0})
+        buckets[b]["total"] += 1
+        if st == TaskStatus.COMPLETED:
+            buckets[b]["completed"] += 1
+        elif st == TaskStatus.FAILED:
+            buckets[b]["failed"] += 1
+    series = [{"t": b, "total": v["total"], "completed": v["completed"], "failed": v["failed"]}
+              for b, v in sorted(buckets.items())]
+
+    # ---- recent task feed (last 15, newest first) ----
+    recent = (await db.execute(
+        select(Task).order_by(Task.created_at.desc()).limit(15)
+    )).scalars().all()
+    feed = [{
+        "task_id": t.task_id, "type": t.task_type, "status": t.status.value if t.status else None,
+        "worker": t.worker_name, "server": worker_server(t.worker_name),
+        "user": t.user_id, "created_at": t.created_at.isoformat() if t.created_at else None,
+        "duration_sec": round((t.completed_at - t.started_at).total_seconds(), 1) if (t.started_at and t.completed_at) else None,
+        "error": (t.error_message or "")[:120] or None,
+    } for t in recent]
+
+    qdepth = None
+    try:
+        import redis.asyncio as _redis
+        r = _redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        qdepth = await r.zcard("arq:queue")  # type: ignore
+        await r.aclose()
+    except Exception:
+        pass
+
+    return {
+        "tasks_1h": sum(d["total"] for d in per_worker.values()),
+        "failed_1h": sum(d["failed"] for d in per_worker.values()),
+        "queue_depth": qdepth,
+        "per_server": per_server,
+        "per_worker": [{"name": k, **v} for k, v in sorted(per_worker.items())],
+        "series_15min": series,
+        "recent": feed,
+        "ts": now.isoformat(),
+    }
+
 
 # ============================================================================
 # Admin — Users (full CRUD + audit)

@@ -671,57 +671,181 @@ docker compose -f docker-compose.worker.yml up -d --build`;
   // ---------------------------------------------------------------------------
 
   function LiveTab() {
-    const [data, setData] = useState<MonitorSummary | null>(null);
+    const [data, setData] = useState<import("@/api/admin").MonitorFull | null>(null);
     const [err, setErr] = useState("");
     const timer = useRef<number | null>(null);
-    const load = useCallback(() => adminApi.getMonitor().then(setData).catch((e: Error) => setErr(e.message)), []);
+    const load = useCallback(() => adminApi.getMonitorFull().then(setData).catch((e: Error) => setErr(e.message)), []);
     useEffect(() => { load(); timer.current = window.setInterval(load, 5000); return () => { if (timer.current) clearInterval(timer.current); }; }, [load]);
 
     if (err) return <Card className="p-6 text-sm text-red-300">{err}</Card>;
     if (!data) return <Card className="p-6 text-sm text-muted">در حال بارگذاری…</Card>;
 
-    const t = data.tasks;
+    const failRate = data.tasks_1h ? Math.round(data.failed_1h * 100 / data.tasks_1h) : 0;
     return (
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-          <Card className="p-4"><div className="text-[11px] font-bold text-muted">صف (queue_depth)</div><div className="mt-1 text-xl font-black">{t.queue_depth ?? "—"}</div></Card>
-          <Card className="p-4"><div className="text-[11px] font-bold text-muted">در انتظار</div><div className="mt-1 text-xl font-black text-amber-200">{t.pending}</div></Card>
-          <Card className="p-4"><div className="text-[11px] font-bold text-muted">در حال اجرا</div><div className="mt-1 text-xl font-black text-sky-200">{t.running}</div></Card>
-          <Card className="p-4"><div className="text-[11px] font-bold text-muted">تکمیل شده</div><div className="mt-1 text-xl font-black text-emerald-200">{t.completed}</div></Card>
-          <Card className="p-4"><div className="text-[11px] font-bold text-muted">ناموفق</div><div className="mt-1 text-xl font-black text-red-200">{t.failed}</div></Card>
-          <Card className="p-4"><div className="text-[11px] font-bold text-muted">کل / امروز</div><div className="mt-1 text-xl font-black">{t.total} / {t.today}</div></Card>
+        {/* KPI row */}
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">تسک یک ساعت اخیر</div><div className="mt-1 text-xl font-black">{data.tasks_1h}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">ناموفق (۱س)</div><div className={`mt-1 text-xl font-black ${data.failed_1h ? "text-red-200" : "text-emerald-200"}`}>{data.failed_1h} <span className="text-xs font-bold">({failRate}%)</span></div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">عمق صف</div><div className="mt-1 text-xl font-black text-amber-200">{data.queue_depth ?? "—"}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">سرورها</div><div className="mt-1 text-xl font-black">{data.per_server.length}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">ورکر آنلاین</div><div className="mt-1 text-xl font-black text-emerald-200">{data.per_server.reduce((a, s) => a + s.online_workers, 0)}</div></Card>
+          <Card className="p-4"><div className="text-[11px] font-bold text-muted">ورکر ثبت‌شده</div><div className="mt-1 text-xl font-black">{data.per_server.reduce((a, s) => a + s.registered_workers, 0)}</div></Card>
         </div>
 
+        {/* throughput chart */}
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-xs font-extrabold">روند تسک‌ها (۱ ساعت اخیر · باکت ۵ دقیقه)</div>
+            <div className="flex gap-3 text-[10px] text-muted">
+              <span className="flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm bg-emerald-400" /> تکمیل</span>
+              <span className="flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm bg-red-400" /> خطا</span>
+              <span className="flex items-center gap-1"><i className="inline-block h-2 w-2 rounded-sm bg-sky-400" /> کل</span>
+            </div>
+          </div>
+          <ThroughputChart series={data.series_15min} />
+        </Card>
+
+        {/* per-server cards */}
         <div className="grid gap-4 md:grid-cols-2">
-          <Card className="p-4">
-            <div className="mb-3 text-xs font-extrabold">موتورها (inflight)</div>
-            <ul className="space-y-2">
-              {data.engines.map((n) => (
-                <li key={n.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[.02] px-3 py-2 text-xs">
-                  <span className="font-bold">{n.name}</span>
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${n.is_healthy ? "bg-emerald-500/15 text-emerald-200" : "bg-red-500/15 text-red-200"}`}>{n.is_healthy ? "سالم" : "خطا"}</span>
-                  <span className="text-muted">{n.active}</span>
-                </li>
-              ))}
-              {data.engines.length === 0 && <li className="text-xs text-muted">موتوری نیست</li>}
-            </ul>
-          </Card>
-          <Card className="p-4">
-            <div className="mb-3 text-xs font-extrabold">ورکرها</div>
-            <ul className="space-y-2">
-              {data.workers.map((w) => (
-                <li key={w.name} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[.02] px-3 py-2 text-xs">
-                  <span className="font-bold">{w.name}</span>
-                  <span className="text-muted">{w.status}</span>
-                </li>
-              ))}
-              {data.workers.length === 0 && <li className="text-xs text-muted">ورکری نیست</li>}
-            </ul>
-          </Card>
+          {data.per_server.map((s) => (
+            <Card key={s.id} className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className={`inline-block h-2 w-2 rounded-full ${s.status === "online" ? "bg-emerald-400 animate-pulse" : s.status === "pending" ? "bg-amber-400" : "bg-red-400"}`} />
+                  <span className="text-sm font-black">{s.name}</span>
+                  {s.region && <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">{s.region}</span>}
+                </div>
+                <span className={`text-[11px] font-bold ${s.online_workers === s.desired_workers ? "text-emerald-300" : "text-amber-300"}`}>{s.online_workers}/{s.desired_workers} ورکر</span>
+              </div>
+              <div className="mt-3 grid grid-cols-4 gap-2 text-center text-[11px]">
+                <div className="rounded-lg bg-white/[.03] py-1.5"><div className="text-muted">تسک ۱س</div><div className="mt-0.5 font-black">{s.tasks_1h}</div></div>
+                <div className="rounded-lg bg-white/[.03] py-1.5"><div className="text-muted">خطا ۱س</div><div className={`mt-0.5 font-black ${s.failed_1h ? "text-red-300" : ""}`}>{s.failed_1h}</div></div>
+                <div className="rounded-lg bg-white/[.03] py-1.5"><div className="text-muted">CPU</div><div className="mt-0.5 font-black">{s.cpu_limit ?? "—"}</div></div>
+                <div className="rounded-lg bg-white/[.03] py-1.5"><div className="text-muted">RAM</div><div className="mt-0.5 font-black">{s.mem_limit ?? "—"}</div></div>
+              </div>
+              {s.host && s.host.cpu_count ? (
+                <div className="mt-3 space-y-1.5">
+                  <HostBar label="CPU" value={s.host.cpu_count} unit="vCPU" />
+                  <HostBar label="RAM" value={s.host.mem_total_gb ?? 0} unit="GB" />
+                  <HostBar label="دیسک" value={s.host.disk_used_pct ?? 0} unit="%" pct />
+                </div>
+              ) : null}
+            </Card>
+          ))}
         </div>
 
-        <p className="text-center text-[11px] text-muted">بروزرسانی خودکار هر ۵ ثانیه · snapshot زنده از DB + Redis</p>
+        {/* per-worker heat table */}
+        <Card className="p-4">
+          <div className="mb-3 text-xs font-extrabold">ورکرها — چه کسی چقدر کار کرده (۱ ساعت اخیر)</div>
+          <div className="overflow-auto">
+            <table className="w-full min-w-[720px] text-xs">
+              <thead className="bg-white/[.04] text-[11px] text-muted"><tr>
+                <th className="px-3 py-2 text-right">ورکر</th><th className="px-3 py-2 text-right">سرور</th>
+                <th className="px-3 py-2 text-right">تسک</th><th className="px-3 py-2 text-right">تکمیل</th>
+                <th className="px-3 py-2 text-right">خطا</th><th className="px-3 py-2 text-right">موفقیت</th>
+                <th className="px-3 py-2 text-right">میانگین زمان</th><th className="px-3 py-2 text-right">بار</th>
+              </tr></thead>
+              <tbody>
+                {data.per_worker.length === 0 && <tr><td colSpan={8} className="px-3 py-4 text-center text-muted">تسکی در ساعت گذشته نبوده</td></tr>}
+                {data.per_worker.map((w) => {
+                  const max = Math.max(...data.per_worker.map((x) => x.total), 1);
+                  return (
+                    <tr key={w.name} className="border-t border-white/5">
+                      <td className="px-3 py-2 font-bold">{w.name}</td>
+                      <td className="px-3 py-2 text-muted">{w.server}</td>
+                      <td className="px-3 py-2 font-black">{w.total}</td>
+                      <td className="px-3 py-2 text-emerald-300">{w.completed}</td>
+                      <td className={`px-3 py-2 ${w.failed ? "text-red-300" : "text-muted"}`}>{w.failed}</td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${w.success_pct >= 90 ? "bg-emerald-500/15 text-emerald-200" : w.success_pct >= 50 ? "bg-amber-500/15 text-amber-200" : "bg-red-500/15 text-red-200"}`}>{w.success_pct}%</span>
+                      </td>
+                      <td className="px-3 py-2 text-muted">{w.avg_sec != null ? `${w.avg_sec}s` : "—"}</td>
+                      <td className="px-3 py-2">
+                        <div className="h-2 w-24 overflow-hidden rounded-full bg-white/10">
+                          <div className="h-full rounded-full bg-gradient-to-l from-sky-400 to-emerald-400" style={{ width: `${(w.total / max) * 100}%` }} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        {/* live feed */}
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-xs font-extrabold">جریان زنده تسک‌ها (۱۵ اخیر)</div>
+            <span className="flex items-center gap-1 text-[10px] text-emerald-300"><i className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" /> زنده</span>
+          </div>
+          <div className="space-y-1.5">
+            {data.recent.map((t) => (
+              <div key={t.task_id} className="flex flex-wrap items-center gap-2 rounded-lg border border-white/5 bg-white/[.02] px-3 py-2 text-[11px]">
+                <span className={`rounded-full px-2 py-0.5 font-bold ${t.status === "completed" ? "bg-emerald-500/15 text-emerald-200" : t.status === "running" ? "bg-sky-500/15 text-sky-200" : t.status === "failed" ? "bg-red-500/15 text-red-200" : "bg-amber-500/15 text-amber-200"}`}>{t.status === "completed" ? "تکمیل" : t.status === "running" ? "در اجرا" : t.status === "failed" ? "خطا" : "صف"}</span>
+                <span className="font-bold">{t.type}</span>
+                <span className="text-muted">→</span>
+                <span className="text-sky-300">{t.worker ?? "—"}</span>
+                <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">{t.server}</span>
+                {t.duration_sec != null && <span className="text-muted">{t.duration_sec}s</span>}
+                {t.error && <span className="truncate text-red-300/80" title={t.error}>⚠ {t.error.slice(0, 60)}</span>}
+                <span className="ml-auto text-muted">{fmtFa(t.created_at)}</span>
+              </div>
+            ))}
+            {data.recent.length === 0 && <p className="text-xs text-muted">تسکی ثبت نشده</p>}
+          </div>
+        </Card>
+
+        <p className="text-center text-[11px] text-muted">بروزرسانی خودکار هر ۵ ثانیه · {fmtFa(data.ts)}</p>
       </div>
+    );
+  }
+
+  function HostBar({ label, value, unit, pct }: { label: string; value: number; unit: string; pct?: boolean }) {
+    const maxVal = pct ? 100 : Math.max(value, 1);
+    const w = Math.min((value / maxVal) * 100, 100);
+    return (
+      <div className="flex items-center gap-2 text-[10px]">
+        <span className="w-8 text-muted">{label}</span>
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
+          <div className={`h-full rounded-full ${pct && value > 85 ? "bg-red-400" : pct && value > 60 ? "bg-amber-400" : "bg-emerald-400"}`} style={{ width: `${w}%` }} />
+        </div>
+        <span className="w-14 text-left text-muted" dir="ltr">{pct ? `${Math.round(value)}%` : `${value}${unit}`}</span>
+      </div>
+    );
+  }
+
+  function ThroughputChart({ series }: { series: { t: number; total: number; completed: number; failed: number }[] }) {
+    // pure-SVG stacked bars — no chart lib
+    const W = 720, H = 160, PAD = 24;
+    if (!series.length) return <p className="py-8 text-center text-xs text-muted">داده‌ای در ساعت گذشته نیست</p>;
+    const max = Math.max(...series.map((p) => p.total), 1);
+    const bw = (W - PAD * 2) / series.length;
+    return (
+      <svg viewBox={`0 0 ${W} ${H + 18}`} className="w-full" style={{ direction: "ltr" }}>
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+          <g key={f}>
+            <line x1={PAD} x2={W - PAD} y1={H - f * (H - PAD * 2) - PAD} y2={H - f * (H - PAD * 2) - PAD} stroke="rgba(255,255,255,.07)" />
+            <text x={4} y={H - f * (H - PAD * 2) - PAD + 3} fill="rgba(255,255,255,.35)" fontSize="9">{Math.round(max * f)}</text>
+          </g>
+        ))}
+        {series.map((p, i) => {
+          const x = PAD + i * bw + bw * 0.15;
+          const w = bw * 0.7;
+          const hTotal = (p.total / max) * (H - PAD * 2);
+          const hFail = (p.failed / max) * (H - PAD * 2);
+          const hDone = (p.completed / max) * (H - PAD * 2);
+          return (
+            <g key={p.t}>
+              <rect x={x} y={H - PAD - hTotal} width={w} height={hTotal} rx="2" fill="rgba(56,189,248,.35)" />
+              <rect x={x} y={H - PAD - hDone} width={w} height={hDone} rx="2" fill="rgb(52,211,153)" />
+              <rect x={x} y={H - PAD - hFail} width={w} height={hFail} rx="2" fill="rgb(248,113,113)" />
+              <title>{`ساعت ${new Date(p.t * 1000).toLocaleTimeString("fa-IR")} — کل: ${p.total} · تکمیل: ${p.completed} · خطا: ${p.failed}`}</title>
+            </g>
+          );
+        })}
+      </svg>
     );
   }
 
