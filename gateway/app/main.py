@@ -1282,24 +1282,55 @@ async def node_install_script(token: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "توکن نامعتبر است")
     settings = get_settings()
     base = settings.PUBLIC_BASE_URL or str(request_url_base())
-    s = f"""#!/usr/bin/env bash
+    name = s.name
+    script = f"""#!/usr/bin/env bash
 set -euo pipefail
-# Vibe-Trading SaaS — node bootstrap (token-authenticated)
-# This script: installs docker if missing, downloads the node bundle,
-# writes .env, and starts the node agent + workers.
+# ============================================================================
+# Vibe-Trading SaaS — node installer for server "{name}"
+# Installs ALL requirements automatically (docker engine + compose plugin,
+# curl, tar, git), downloads the node bundle and starts the agent.
+# The agent registers this server with the panel and brings up its workers.
+# ============================================================================
 export VT_JOIN_TOKEN="{token}"
 export VT_CONTROL_URL="{base}"
-command -v docker >/dev/null 2>&1 || curl -fsSL https://get.docker.com | sh
-mkdir -p /opt/vibe-node && cd /opt/vibe-node
-curl -fsSL "$VT_CONTROL_URL/api/v1/node/{token}/bundle" -o node.tar.gz
+export VT_SERVER_NAME="{name}"
+NODE_DIR=/opt/vibe-node
+
+say() {{ echo -e "\033[1;32m[vibe]\033[0m $*"; }}
+err() {{ echo -e "\033[1;31m[vibe]\033[0m $*" >&2; exit 1; }}
+
+say "1/5 checking control plane connectivity…"
+curl -fsSL -o /dev/null "$VT_CONTROL_URL/api/v1/node/$VT_JOIN_TOKEN/state" || err "cannot reach $VT_CONTROL_URL or token invalid"
+
+say "2/5 installing base requirements (curl tar git)…"
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -qq && apt-get install -y -qq curl ca-certificates tar git >/dev/null
+elif command -v dnf >/dev/null 2>&1; then
+  dnf install -y -q curl tar git >/dev/null
+elif command -v yum >/dev/null 2>&1; then
+  yum install -y -q curl tar git >/dev/null
+fi
+
+say "3/5 installing Docker Engine + Compose plugin (skipped if present)…"
+if ! command -v docker >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com | sh || err "docker install failed"
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  err "docker compose plugin missing — install docker-compose-plugin manually"
+fi
+systemctl enable --now docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1 || true
+
+say "4/5 downloading node bundle (agent + worker + compose)…"
+mkdir -p "$NODE_DIR" && cd "$NODE_DIR"
+curl -fsSL "$VT_CONTROL_URL/api/v1/node/$VT_JOIN_TOKEN/bundle" -o node.tar.gz
 tar xzf node.tar.gz
-source .env 2>/dev/null || true
-export VT_JOIN_TOKEN="{token}" VT_CONTROL_URL="{base}"
-# start the agent only — it fetches config from the panel and then brings up workers
+
+say "5/5 starting node agent for '{name}'…"
 docker compose -p vibe-node -f docker-compose.node.yml up -d --build --quiet-pull agent
-echo "Vibe node agent started. Workers will register within ~30s."
+say "done. agent is joining the panel now — server '{name}' + workers appear in ~30s."
+say "manage this server's worker count from the panel (Nodes → Servers, +/− buttons)."
 """
-    return PlainTextResponse(s, media_type="text/x-shellscript")
+    return PlainTextResponse(script, media_type="text/x-shellscript")
 
 
 def request_url_base() -> str:

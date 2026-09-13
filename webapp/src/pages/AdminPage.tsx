@@ -204,6 +204,23 @@
   // Users
   // ---------------------------------------------------------------------------
 
+
+  // Persian/Arabic digits → latin + int (Persian keyboard safe)
+  const faDigits = "۰۱۲۳۴۵۶۷۸۹";
+  const arDigits = "٠١٢٣٤٥٦٧٨٩";
+  function parseNum(v: string): number {
+    let s = "";
+    for (const ch of v) {
+      const fi = faDigits.indexOf(ch);
+      const ai = arDigits.indexOf(ch);
+      if (fi >= 0) s += String(fi);
+      else if (ai >= 0) s += String(ai);
+      else s += ch;
+    }
+    s = s.replace(/[^0-9]/g, "");
+    return s ? parseInt(s, 10) : 0;
+  }
+
   function UsersTab({ onToast }: { onToast: (m: string) => void }) {
     const [q, setQ] = useState("");
     const [rows, setRows] = useState<AdminUserRow[] | null>(null);
@@ -297,7 +314,7 @@
               <select value={f.plan_tier} onChange={(e) => setF({ ...f, plan_tier: e.target.value })} className="flex-1 rounded-xl border border-white/10 bg-zinc-800 px-3 py-2.5">
                 <option value="free">رایگان</option><option value="basic">پایه</option><option value="pro">حرفه‌ای</option><option value="enterprise">سازمانی</option>
               </select>
-              <input type="number" value={f.plan_days} onChange={(e) => setF({ ...f, plan_days: Number(e.target.value) || 0 })} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
+              <input inputMode="numeric" value={f.plan_days} onChange={(e) => setF({ ...f, plan_days: parseNum(e.target.value) })} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
             </div>
             <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={f.is_admin} onChange={(e) => setF({ ...f, is_admin: e.target.checked })} /> ادمین</label>
           </div>
@@ -355,7 +372,7 @@
             <select value={tier} onChange={(e) => setTier(e.target.value)} className="flex-1 rounded-xl border border-white/10 bg-zinc-800 px-3 py-2.5">
               <option value="basic">پایه</option><option value="pro">حرفه‌ای</option><option value="enterprise">سازمانی</option>
             </select>
-            <input type="number" value={days} onChange={(e) => setDays(Number(e.target.value) || 0)} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
+            <input inputMode="numeric" value={days} onChange={(e) => setDays(parseNum(e.target.value))} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
           </div>
           <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "اعطا"}</Button></div>
         </div>
@@ -570,8 +587,8 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                   <input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} placeholder="region" className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
                 </div>
                 <div className="flex gap-2 text-xs">
-                  <label className="flex-1">ورکرها<input type="number" value={f.desired_workers} onChange={(e) => setF({ ...f, desired_workers: Number(e.target.value) || 0 })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
-                  <label className="flex-1">همزمانی/ورکر<input type="number" value={f.worker_concurrency} onChange={(e) => setF({ ...f, worker_concurrency: Number(e.target.value) || 1 })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                  <label className="flex-1">ورکرها<input inputMode="numeric" value={f.desired_workers} onChange={(e) => setF({ ...f, desired_workers: parseNum(e.target.value) })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                  <label className="flex-1">همزمانی/ورکر<input inputMode="numeric" value={f.worker_concurrency} onChange={(e) => setF({ ...f, worker_concurrency: Math.max(1, parseNum(e.target.value)) })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
                 </div>
                 <div className="flex gap-2 text-xs">
                   <label className="flex-1">CPU<input value={f.cpu_limit} onChange={(e) => setF({ ...f, cpu_limit: e.target.value })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
@@ -639,7 +656,7 @@ docker compose -f docker-compose.worker.yml up -d --build`;
             <input value={f.api_key} onChange={(e) => setF({ ...f, api_key: e.target.value })} placeholder="API Key (اختیاری — خالی = سراسری)" type="password" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
             <div className="flex gap-2">
               <input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} placeholder="region (اختیاری)" className="flex-1 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
-              <input type="number" value={f.max_concurrency} onChange={(e) => setF({ ...f, max_concurrency: Number(e.target.value) || 0 })} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
+              <input inputMode="numeric" value={f.max_concurrency} onChange={(e) => setF({ ...f, max_concurrency: parseNum(e.target.value) })} className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5" />
             </div>
             <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={f.is_enabled} onChange={(e) => setF({ ...f, is_enabled: e.target.checked })} /> فعال</label>
           </div>
