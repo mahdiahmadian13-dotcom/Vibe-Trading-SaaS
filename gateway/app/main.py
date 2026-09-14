@@ -2460,6 +2460,112 @@ async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSess
     )
 
 
+# ---------------------------------------------------------------------------
+# One-time download tokens — Telegram WebApp can't fetch() blob downloads from
+# cross-origin iframes on all clients, so we mint a short-lived token that lets
+# the browser open the PDF with a plain <a href> / openLink.
+# Tokens live in Redis (gateway runs 4 uvicorn workers — memory dict is NOT shared).
+# ---------------------------------------------------------------------------
+
+async def _dl_redis():
+    import redis.asyncio as _redis
+    return _redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+
+
+@app.post("/api/v1/vibe/runs/{run_id}/pdf-token")
+async def run_pdf_token(
+    run_id: str,
+    body: dict | None = None,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mint a one-time token (60s) to fetch this run's PDF or code file without auth headers."""
+    await get_run_detail(run_id=run_id, user=user, db=db)  # ownership check
+    kind = (body or {}).get("kind", "pdf")
+    if kind not in ("pdf", "code"):
+        raise HTTPException(400, "نوع دانلود نامعتبر است")
+    file = str((body or {}).get("file") or "signal_engine.py")[:64]
+    token = secrets.token_urlsafe(24)
+    r = await _dl_redis()
+    try:
+        # value packs run_id + kind + file; GETDEL makes it single-use atomically
+        await r.set(f"dl:{token}", f"{run_id}|{kind}|{file}", ex=60)
+    finally:
+        await r.aclose()
+    url = (
+        f"/api/v1/vibe/runs/{run_id}/pdf-open?token={token}"
+        if kind == "pdf"
+        else f"/api/v1/vibe/runs/{run_id}/code-open?token={token}&file={file}"
+    )
+    return {"token": token, "url": url, "expires_in": 60}
+
+
+async def _pop_dl_token(token: str, run_id: str, kind: str) -> str | None:
+    """Atomically consume a download token; returns the bound file (for code) or ''."""
+    r = await _dl_redis()
+    try:
+        raw = await r.getdel(f"dl:{token}")
+    finally:
+        await r.aclose()
+    if not raw:
+        return None
+    parts = raw.split("|", 2)
+    if len(parts) != 3 or parts[0] != run_id or parts[1] != kind:
+        return None
+    return parts[2]
+
+
+@app.get("/api/v1/vibe/runs/{run_id}/pdf-open")
+async def run_pdf_open(run_id: str, token: str, db: AsyncSession = Depends(get_db)):
+    """Fetch the PDF via one-time token (no Authorization header needed)."""
+    if await _pop_dl_token(token, run_id, "pdf") is None:
+        raise HTTPException(403, "لینک دانلود منقضی یا نامعتبر است — دوباره تلاش کن")
+
+    pool = get_pool()
+    detail = await pool.request(db, "GET", f"/runs/{run_id}")
+    from app.pdf_report import build_backtest_pdf  # type: ignore
+    try:
+        pdf_bytes = build_backtest_pdf(detail)
+    except Exception as exc:
+        raise HTTPException(500, f"خطا در ساخت PDF: {exc}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="backtest_{run_id}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get("/api/v1/vibe/runs/{run_id}/code-open")
+async def run_code_open(run_id: str, token: str, file: str = "signal_engine.py", db: AsyncSession = Depends(get_db)):
+    """Fetch a strategy source file via one-time token (no Authorization header needed)."""
+    bound = await _pop_dl_token(token, run_id, "code")
+    if bound is None:
+        raise HTTPException(403, "لینک دانلود منقضی یا نامعتبر است — دوباره تلاش کن")
+    if file != bound:
+        raise HTTPException(403, "فایل درخواستی با توکن هم‌خوان نیست")
+
+    pool = get_pool()
+    files: dict = {}
+    try:
+        files = await pool.request(db, "GET", f"/runs/{run_id}/code") or {}
+    except Exception:
+        files = {}
+    src = files.get(file)
+    if src is None:
+        raise HTTPException(404, "فایل یافت نشد")
+    return Response(
+        content=src,
+        media_type="text/x-python; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{file}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/v1/vibe/runs/{run_id}/code")
 async def run_code(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
     """Strategy source files for a run (ownership-checked) — same data as the main WebUI Code tab.

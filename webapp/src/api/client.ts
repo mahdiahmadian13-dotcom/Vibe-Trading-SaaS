@@ -136,3 +136,39 @@ export async function authDownload(url: string, filename: string) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
+
+/** Telegram-friendly download: mint one-time token URL, then open it natively. */
+export async function openDownloadToken(
+  url: string,
+  opts: { kind?: "pdf" | "code"; file?: string } = {},
+): Promise<boolean> {
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${auth.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: opts.kind || "pdf", file: opts.file }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    if (!d?.url) return false;
+    const full = new URL(d.url, window.location.origin).href;
+    const tg = (window as unknown as {
+      Telegram?: { WebApp?: { openLink?: (l: string, o?: object) => void } };
+    }).Telegram?.WebApp;
+    if (tg?.openLink) {
+      // inside Telegram WebApp: openLink opens the system browser (downloads work there)
+      tg.openLink(full, { try_instant_view: false });
+    } else {
+      const a = document.createElement("a");
+      a.href = full;
+      a.target = "_blank";
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
