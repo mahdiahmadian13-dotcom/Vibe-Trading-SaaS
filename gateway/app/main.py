@@ -2507,8 +2507,11 @@ async def run_pdf_token(
     token = secrets.token_urlsafe(24)
     r = await _dl_redis()
     try:
-        # value packs run_id + kind + file; GETDEL makes it single-use atomically
-        await r.set(f"dl:{token}", f"{run_id}|{kind}|{file}", ex=60)
+        # MULTI-USE within the TTL window, capped use-count (see _check_dl_token):
+        # Telegram's downloader fetches the URL MORE THAN ONCE (sniff + save,
+        # sometimes a retry) — a single-use GETDEL made every 2nd fetch 403
+        # and the downloader died SILENTLY (popup OK, no file saved).
+        await r.set(f"dl:{token}", f"{run_id}|{kind}|{file}|0", ex=600)
     finally:
         await r.aclose()
     url = (
@@ -2516,28 +2519,60 @@ async def run_pdf_token(
         if kind == "pdf"
         else f"/api/v1/vibe/runs/{run_id}/code-open?token={token}&file={file}"
     )
-    return {"token": token, "url": url, "expires_in": 60}
+    return {"token": token, "url": url, "expires_in": 600}
 
 
-async def _pop_dl_token(token: str, run_id: str, kind: str) -> str | None:
-    """Atomically consume a download token; returns the bound file (for code) or ''."""
+_DL_MAX_USES = 20  # generous cap: covers sniff+save+retries, still stops abuse loops
+
+
+async def _check_dl_token(token: str, run_id: str, kind: str) -> str | None:
+    """Validate a download token; returns the bound file (for code) or ''.
+
+    Multi-use by design (max _DL_MAX_USES fetches within the 600s TTL):
+    Telegram's native downloader re-fetches the same URL (Chromium does an
+    initial sniff pass, then the real save, then possible range-retry), so
+    consuming the token on the first GET broke every download after the
+    first fetch. GET + SET(racy between the 4 workers, but the cap is
+    generous and only guards against abuse loops); KEEPTTL keeps the
+    window fixed from mint time.
+    """
+    import logging
     r = await _dl_redis()
     try:
-        raw = await r.getdel(f"dl:{token}")
+        raw = await r.get(f"dl:{token}")
+        if not raw:
+            logging.getLogger("uvicorn.error").warning(
+                "[dl-token] REJECTED (missing/expired) run=%s kind=%s token=%s", run_id, kind, token[:8]
+            )
+            return None
+        parts = raw.split("|")
+        # legacy single-use format: run_id|kind|file (no use counter)
+        if len(parts) == 3:
+            parts.append("0")
+        if len(parts) != 4 or parts[0] != run_id or parts[1] != kind:
+            logging.getLogger("uvicorn.error").warning(
+                "[dl-token] REJECTED (mismatch) run=%s kind=%s token=%s raw=%r", run_id, kind, token[:8], raw[:64]
+            )
+            return None
+        used = int(parts[3] or "0") + 1
+        if used > _DL_MAX_USES:
+            logging.getLogger("uvicorn.error").warning(
+                "[dl-token] REJECTED (over-use %d) run=%s token=%s", used, run_id, token[:8]
+            )
+            return None
+        await r.set(f"dl:{token}", f"{parts[0]}|{parts[1]}|{parts[2]}|{used}", xx=True, keepttl=True)
+        logging.getLogger("uvicorn.error").info(
+            "[dl-token] ACCEPTED use=%d run=%s kind=%s", used, run_id, kind
+        )
+        return parts[2]
     finally:
         await r.aclose()
-    if not raw:
-        return None
-    parts = raw.split("|", 2)
-    if len(parts) != 3 or parts[0] != run_id or parts[1] != kind:
-        return None
-    return parts[2]
 
 
 @app.get("/api/v1/vibe/runs/{run_id}/pdf-open")
 async def run_pdf_open(run_id: str, token: str, db: AsyncSession = Depends(get_db)):
-    """Fetch the PDF via one-time token (no Authorization header needed)."""
-    if await _pop_dl_token(token, run_id, "pdf") is None:
+    """Fetch the PDF via download token (no Authorization header needed)."""
+    if await _check_dl_token(token, run_id, "pdf") is None:
         raise HTTPException(403, "لینک دانلود منقضی یا نامعتبر است — دوباره تلاش کن")
 
     pool = get_pool()
@@ -2561,8 +2596,8 @@ async def run_pdf_open(run_id: str, token: str, db: AsyncSession = Depends(get_d
 
 @app.get("/api/v1/vibe/runs/{run_id}/code-open")
 async def run_code_open(run_id: str, token: str, file: str = "signal_engine.py", db: AsyncSession = Depends(get_db)):
-    """Fetch a strategy source file via one-time token (no Authorization header needed)."""
-    bound = await _pop_dl_token(token, run_id, "code")
+    """Fetch a strategy source file via download token (no Authorization header needed)."""
+    bound = await _check_dl_token(token, run_id, "code")
     if bound is None:
         raise HTTPException(403, "لینک دانلود منقضی یا نامعتبر است — دوباره تلاش کن")
     if file != bound:
@@ -2604,21 +2639,17 @@ async def swarm_pdf_token(
     token = secrets.token_urlsafe(24)
     r = await _dl_redis()
     try:
-        await r.set(f"dl:{token}", f"swarm|{run_id}|pdf", ex=60)
+        # multi-use (Telegram downloader re-fetches; see _check_dl_token)
+        await r.set(f"dl:{token}", f"{run_id}|pdf|pdf|0", ex=600)
     finally:
         await r.aclose()
-    return {"token": token, "url": f"/api/v1/vibe/swarm/runs/{run_id}/pdf-open?token={token}", "expires_in": 60}
+    return {"token": token, "url": f"/api/v1/vibe/swarm/runs/{run_id}/pdf-open?token={token}", "expires_in": 600}
 
 
 @app.get("/api/v1/vibe/swarm/runs/{run_id}/pdf-open")
 async def swarm_pdf_open(run_id: str, token: str, db: AsyncSession = Depends(get_db)):
-    """Fetch the swarm PDF via one-time token (no Authorization header needed)."""
-    r = await _dl_redis()
-    try:
-        raw = await r.getdel(f"dl:{token}")
-    finally:
-        await r.aclose()
-    if not raw or raw != f"swarm|{run_id}|pdf":
+    """Fetch the swarm PDF via download token (no Authorization header needed)."""
+    if await _check_dl_token(token, run_id, "pdf") is None:
         raise HTTPException(403, "لینک دانلود منقضی یا نامعتبر است — دوباره تلاش کن")
 
     pool = get_pool()
