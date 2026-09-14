@@ -20,8 +20,11 @@ export const sid = (s: SessionRow) => s.vibe_session_id || s.session_id || s.id 
 
 export const listSessions = () => api<SessionRow[]>("/api/v1/vibe/sessions");
 
-export const createSession = () =>
-  api<{ session_id?: string }>("/api/v1/vibe/sessions", { method: "POST" });
+export const createSession = (title?: string) =>
+  api<{ session_id?: string }>("/api/v1/vibe/sessions", {
+    method: "POST",
+    body: JSON.stringify(title ? { title } : {}),
+  });
 
 export const getMessages = (id: string) =>
   api<ChatMessage[]>(`/api/v1/vibe/sessions/${id}/messages`);

@@ -541,14 +541,17 @@ async def current_subscription(
 
 @app.post("/api/v1/vibe/sessions")
 async def create_session(
+    body: dict | None = None,
     user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new Vibe-Trading session (with ownership tracking)."""
     await _check_limit(db, user, "session")
 
+    raw_title = str((body or {}).get("title", "")).strip()
+    title = raw_title[:80] if raw_title else f"گفتگوی {user.username}"
     pool = get_pool()
-    result = await pool.request(db, "POST", "/sessions", json={"title": f"گفتگوی {user.username}"})
+    result = await pool.request(db, "POST", "/sessions", json={"title": title})
     session_id = result.get("session_id") or result.get("id")
 
     # Record ownership

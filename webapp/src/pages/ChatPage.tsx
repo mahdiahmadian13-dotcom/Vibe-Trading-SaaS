@@ -23,8 +23,12 @@ export default function ChatPage() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   const [couponOut, setCouponOut] = useState(false);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState("");
   const [renameVal, setRenameVal] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newOpen, setNewOpen] = useState(false);
+  const [newBusy, setNewBusy] = useState(false);
+  const [newErr, setNewErr] = useState("");
   const stopRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -57,10 +61,10 @@ export default function ChatPage() {
     try {
       await renameSession(id, title);
       setSessions((prev) => (prev || []).map((s) => (sid(s) === id ? { ...s, title } : s)));
-      setRenamingId(null);
+      setRenamingId("");
     } catch (e) {
       setBubbles((b) => [...(b || []), { role: "bot", text: "❌ تغییر نام ناموفق: " + (e as Error).message }]);
-      setRenamingId(null);
+      setRenamingId("");
     }
   };
 
@@ -80,17 +84,33 @@ export default function ChatPage() {
     }
   };
 
+  const openNewDialog = () => {
+    setNewName("");
+    setNewErr("");
+    setNewOpen(true);
+  };
+
   const newChat = async () => {
+    const title = newName.trim();
+    if (newBusy) return;
+    if (!title) { setNewErr("یه اسم برای گفتگو بنویس"); return; }
+    if (title.length > 80) { setNewErr("اسم حداکثر ۸۰ نویسه"); return; }
+    setNewBusy(true);
+    setNewErr("");
     try {
-      const s = await createSession();
+      const s = await createSession(title);
       const id = s.session_id || (s as unknown as { id?: string }).id;
       if (!id) throw new Error("شناسه سشن دریافت نشد");
-      setSessions((prev) => [{ session_id: id, title: "چت جدید" }, ...(prev || [])]);
+      setSessions((prev) => [{ session_id: id, title }, ...(prev || [])]);
       setCurrent(id);
       setBubbles([]);
       setHistoryOpen(false);
+      setNewOpen(false);
+      setNewName("");
     } catch (e) {
-      setBubbles([{ role: "bot", text: "❌ خطا در ساخت گفتگو: " + (e as Error).message }]);
+      setNewErr((e as Error).message);
+    } finally {
+      setNewBusy(false);
     }
   };
 
@@ -211,7 +231,7 @@ export default function ChatPage() {
             <History size={14} /> گفتگوها
           </button>
           <button
-            onClick={newChat}
+            onClick={openNewDialog}
             className="flex h-9 items-center gap-1.5 rounded-xl bg-gradient-to-l from-brand to-brand-soft px-3 text-[12px] font-bold text-white shadow-lg shadow-brand/20 active:scale-95"
           >
             <Plus size={14} /> جدید
@@ -241,7 +261,7 @@ export default function ChatPage() {
                       onChange={(e) => setRenameVal(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") doRename();
-                        if (e.key === "Escape") setRenamingId(null);
+                        if (e.key === "Escape") setRenamingId("");
                       }}
                       maxLength={80}
                       placeholder="نام جدید گفتگو…"
@@ -251,7 +271,7 @@ export default function ChatPage() {
                       className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/20 text-indigo-200 transition-colors hover:bg-brand/30">
                       <Check size={13} />
                     </button>
-                    <button onClick={() => setRenamingId(null)} aria-label="انصراف"
+                    <button onClick={() => setRenamingId("")} aria-label="انصراف"
                       className="flex h-7 w-7 items-center justify-center rounded-lg border border-line text-muted transition-colors hover:text-ink">
                       <X size={13} />
                     </button>
@@ -388,6 +408,56 @@ export default function ChatPage() {
           </Button>
         </div>
       )}
+
+      {/* new-chat naming dialog */}
+      <AnimatePresence>
+        {newOpen && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+            onClick={() => !newBusy && setNewOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.94, y: 14, opacity: 0 }}
+              animate={{ scale: 1, y: 0, opacity: 1 }}
+              exit={{ scale: 0.94, y: 14, opacity: 0 }}
+              transition={{ type: "spring", stiffness: 340, damping: 30 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm rounded-2xl border border-line bg-panel2 p-5"
+            >
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand/15 ring-1 ring-inset ring-brand/30">
+                  <Plus size={17} className="text-brand" />
+                </span>
+                <div>
+                  <div className="text-[14px] font-extrabold">گفتگوی جدید</div>
+                  <div className="text-[11px] text-muted">برای این گفتگو یه اسم انتخاب کن</div>
+                </div>
+              </div>
+              <input
+                autoFocus
+                value={newName}
+                onChange={(e) => { setNewName(e.target.value); setNewErr(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") newChat(); }}
+                maxLength={80}
+                placeholder="مثلاً: بک‌تست RSI بیت‌کوین"
+                className={`mt-4 w-full rounded-xl border bg-white/[.04] px-4 py-3 text-[14px] font-semibold outline-none transition-colors placeholder:font-normal placeholder:text-muted/60 focus:border-brand/50 ${newErr ? "border-neg/50" : "border-line"}`}
+              />
+              <div className="mt-1.5 flex items-center justify-between text-[10.5px]">
+                <span className={newErr ? "font-semibold text-neg" : "text-muted/70"}>
+                  {newErr || `${faNum(80 - newName.length)} نویسه باقی`}
+                </span>
+              </div>
+              <div className="mt-4 flex gap-2.5">
+                <Button className="flex-1" onClick={newChat} disabled={newBusy}>
+                  {newBusy ? "در حال ساخت…" : "شروع گفتگو"}
+                </Button>
+                <Button variant="ghost" onClick={() => setNewOpen(false)} disabled={newBusy}>انصراف</Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
