@@ -4,7 +4,7 @@ import {
   BarChart3, Copy, Download, FileCode2, FileText, X, TrendingUp, Percent,
   Activity, Target, Trophy, Wallet, Flame, Scale, Calendar, Check, Code2,
 } from "lucide-react";
-import { api, auth, authDownload, openDownloadToken, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
+import { api, auth, smartDownload, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
 import { faNum, fmtCls, fmtPct } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { CardSkeleton, EmptyState, StatCard } from "@/components/ui/primitives";
@@ -202,27 +202,25 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
   const downloadPdf = async () => {
     setPdfBusy(true);
     try {
-      // 1) plain blob download (desktop browsers)
-      await authDownload(`/api/v1/vibe/runs/${runId}/pdf?_=${Date.now()}`, `backtest_${runId}.pdf`);
-    } catch {
-      // 2) Telegram WebApp: one-time token link opened natively
-      await openDownloadToken(`/api/v1/vibe/runs/${runId}/pdf-token`);
+      const ok = await smartDownload(
+        `/api/v1/vibe/runs/${runId}/pdf?_=${Date.now()}`,
+        `backtest_${runId}.pdf`,
+        `/api/v1/vibe/runs/${runId}/pdf-token`,
+        { kind: "pdf" },
+      );
+      if (!ok) setErr("دانلود ناموفق بود — دوباره تلاش کن");
     } finally {
       setPdfBusy(false);
     }
   };
   const downloadCode = async () => {
-    try {
-      await authDownload(
-        `/api/v1/vibe/runs/${runId}/code/download?file=${encodeURIComponent(activeFile)}&_=${Date.now()}`,
-        activeFile,
-      );
-    } catch {
-      await openDownloadToken(`/api/v1/vibe/runs/${runId}/pdf-token`, {
-        kind: "code",
-        file: activeFile,
-      });
-    }
+    const ok = await smartDownload(
+      `/api/v1/vibe/runs/${runId}/code/download?file=${encodeURIComponent(activeFile)}&_=${Date.now()}`,
+      activeFile,
+      `/api/v1/vibe/runs/${runId}/pdf-token`,
+      { kind: "code", file: activeFile },
+    );
+    if (!ok) setErr("دانلود ناموفق بود — دوباره تلاش کن");
   };
 
   const metricBox = (

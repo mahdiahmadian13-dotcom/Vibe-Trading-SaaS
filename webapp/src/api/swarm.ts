@@ -47,8 +47,13 @@ export const getSwarmRun = (id: string) => api<SwarmRunStatus>(`/api/v1/vibe/swa
 export const listSwarmRuns = () => api<SwarmRunRow[]>(`/api/v1/vibe/swarm/runs`);
 
 export async function downloadSwarmPdf(id: string) {
-  const { authDownload } = await import("@/api/client");
-  await authDownload(`/api/v1/vibe/swarm/runs/${id}/pdf?_=${Date.now()}`, `swarm_${id.slice(0, 16)}.pdf`);
+  const { smartDownload } = await import("@/api/client");
+  await smartDownload(
+    `/api/v1/vibe/swarm/runs/${id}/pdf?_=${Date.now()}`,
+    `swarm_${id.slice(0, 16)}.pdf`,
+    `/api/v1/vibe/swarm/runs/${id}/pdf-token`,
+    { kind: "pdf" },
+  );
 }
 
 /* ------------------------ Persian form knowledge base ---------------------- */

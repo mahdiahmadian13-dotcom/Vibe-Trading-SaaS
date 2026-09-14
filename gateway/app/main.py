@@ -2566,6 +2566,59 @@ async def run_code_open(run_id: str, token: str, file: str = "signal_engine.py",
     )
 
 
+@app.post("/api/v1/vibe/swarm/runs/{run_id}/pdf-token")
+async def swarm_pdf_token(
+    run_id: str,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mint a one-time token (60s) to fetch a swarm PDF without auth headers."""
+    result = await db.execute(
+        select(SwarmRun).where(SwarmRun.swarm_run_id == run_id, SwarmRun.user_id == user.id)
+    )
+    if not result.scalar_one_or_none() and not user.is_admin:
+        raise HTTPException(403, "این اجرا متعلق به شما نیست")
+    token = secrets.token_urlsafe(24)
+    r = await _dl_redis()
+    try:
+        await r.set(f"dl:{token}", f"swarm|{run_id}|pdf", ex=60)
+    finally:
+        await r.aclose()
+    return {"token": token, "url": f"/api/v1/vibe/swarm/runs/{run_id}/pdf-open?token={token}", "expires_in": 60}
+
+
+@app.get("/api/v1/vibe/swarm/runs/{run_id}/pdf-open")
+async def swarm_pdf_open(run_id: str, token: str, db: AsyncSession = Depends(get_db)):
+    """Fetch the swarm PDF via one-time token (no Authorization header needed)."""
+    r = await _dl_redis()
+    try:
+        raw = await r.getdel(f"dl:{token}")
+    finally:
+        await r.aclose()
+    if not raw or raw != f"swarm|{run_id}|pdf":
+        raise HTTPException(403, "لینک دانلود منقضی یا نامعتبر است — دوباره تلاش کن")
+
+    pool = get_pool()
+    status = await pool.request(db, "GET", f"/swarm/runs/{run_id}")
+    report = (status or {}).get("final_report", "")
+    if not report:
+        raise HTTPException(400, "این اجرا هنوز گزارشی ندارد (تکمیل نشده)")
+    from app.pdf_report import build_swarm_pdf  # type: ignore
+    try:
+        preset = (status or {}).get("preset_name", "swarm")
+        pdf_bytes = build_swarm_pdf(preset, preset, report, (status or {}).get("tasks", []))
+    except Exception as exc:
+        raise HTTPException(500, f"خطا در ساخت PDF: {exc}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="swarm_{run_id[:16]}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/v1/vibe/runs/{run_id}/code")
 async def run_code(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
     """Strategy source files for a run (ownership-checked) — same data as the main WebUI Code tab.

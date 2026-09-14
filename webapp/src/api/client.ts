@@ -69,6 +69,9 @@ type TelegramWebApp = {
   ready?: () => void;
   expand?: () => void;
   HapticFeedback?: { impactOccurred?: (s: string) => void };
+  downloadFile?: (url: string, file_name: string) => void;
+  openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
+  platform?: string;
 };
 
 declare global {
@@ -123,7 +126,12 @@ export const getRuns = (backtestsOnly = true) =>
 export const getRun = (id: string) => api<RunDetail>(`/api/v1/vibe/runs/${id}`);
 export const getSessions = () => api<SessionRow[]>("/api/v1/vibe/sessions");
 
-/** Blob download with Bearer auth (browser can't send headers via <a download>). */
+/** True when running inside the Telegram WebApp (mobile WebView blocks blob downloads). */
+export function inTelegramWebApp(): boolean {
+  return !!window.Telegram?.WebApp?.initData;
+}
+
+/** Blob download with Bearer auth — plain browsers only (Telegram mobile silently ignores it). */
 export async function authDownload(url: string, filename: string) {
   const r = await fetch(url, { headers: { Authorization: `Bearer ${auth.token}` } });
   if (!r.ok) throw new ApiError("خطای سرور", r.status);
@@ -152,23 +160,49 @@ export async function openDownloadToken(
     const d = await r.json();
     if (!d?.url) return false;
     const full = new URL(d.url, window.location.origin).href;
-    const tg = (window as unknown as {
-      Telegram?: { WebApp?: { openLink?: (l: string, o?: object) => void } };
-    }).Telegram?.WebApp;
-    if (tg?.openLink) {
-      // inside Telegram WebApp: openLink opens the system browser (downloads work there)
-      tg.openLink(full, { try_instant_view: false });
-    } else {
-      const a = document.createElement("a");
-      a.href = full;
-      a.target = "_blank";
-      a.rel = "noopener";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+    const tg = window.Telegram?.WebApp;
+    // 1) Telegram native download (works on mobile)
+    if (tg?.downloadFile) {
+      tg.downloadFile(full, opts.kind === "code" ? opts.file || "strategy.py" : "backtest.pdf");
+      return true;
     }
+    // 2) Telegram openLink → system browser
+    if (tg?.openLink) {
+      tg.openLink(full, { try_instant_view: false });
+      return true;
+    }
+    // 3) plain browser
+    const a = document.createElement("a");
+    a.href = full;
+    a.target = "_blank";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Download that works everywhere:
+ * - Telegram WebApp (mobile+desktop): one-time token URL + downloadFile()/openLink
+ * - plain browser: Bearer blob download
+ */
+export async function smartDownload(
+  fileUrl: string,
+  filename: string,
+  tokenUrl: string,
+  opts: { kind?: "pdf" | "code"; file?: string } = {},
+): Promise<boolean> {
+  if (inTelegramWebApp()) {
+    return openDownloadToken(tokenUrl, opts);
+  }
+  try {
+    await authDownload(fileUrl, filename);
+    return true;
+  } catch {
+    return openDownloadToken(tokenUrl, opts);
   }
 }
