@@ -2432,6 +2432,37 @@ async def run_chart(run_id: str, user: User = Depends(require_auth), db: AsyncSe
         return Response(content=svg, media_type="image/svg+xml")
 
 
+@app.post("/api/v1/vibe/swarm/runs/{run_id}/send-to-telegram")
+async def swarm_send_to_telegram(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Send the swarm PDF straight into the user's Telegram chat (mobile-safe)."""
+    if not user.telegram_id:
+        raise HTTPException(400, "حساب شما به تلگرام متصل نیست")
+    result = await db.execute(
+        select(SwarmRun).where(SwarmRun.swarm_run_id == run_id, SwarmRun.user_id == user.id)
+    )
+    if not result.scalar_one_or_none() and not user.is_admin:
+        raise HTTPException(403, "این اجرا متعلق به شما نیست")
+
+    pool = get_pool()
+    status = await pool.request(db, "GET", f"/swarm/runs/{run_id}")
+    report = (status or {}).get("final_report", "")
+    if not report:
+        raise HTTPException(400, "این اجرا هنوز گزارشی ندارد (تکمیل نشده)")
+    from app.pdf_report import build_swarm_pdf  # type: ignore
+    try:
+        preset = (status or {}).get("preset_name", "swarm")
+        pdf_bytes = build_swarm_pdf(preset, preset, report, (status or {}).get("tasks", []))
+    except Exception as exc:
+        raise HTTPException(500, f"خطا در ساخت PDF: {exc}")
+    await _tg_send_document(
+        user.telegram_id,
+        f"swarm_{run_id[:24]}.pdf",
+        pdf_bytes,
+        f"🤖 گزارش سوارم — {preset}",
+    )
+    return {"ok": True, "chat_id": user.telegram_id}
+
+
 @app.get("/api/v1/vibe/runs/{run_id}/pdf")
 async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
     """Backtest report as PDF (ownership-checked) — reuses the bot's fpdf2 builder."""
@@ -2458,6 +2489,109 @@ async def run_pdf(run_id: str, user: User = Depends(require_auth), db: AsyncSess
             "Cache-Control": "no-store",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Telegram-native delivery: the most reliable download path on mobile is no
+# download at all — the bot sends the file as a Telegram document message.
+# Works on every client (iOS/Android/desktop) with zero WebView involvement.
+# ---------------------------------------------------------------------------
+
+async def _tg_api(method: str, payload: dict) -> dict:
+    """Call the Telegram Bot API directly (token from env, same one the bot uses)."""
+    import httpx
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        raise HTTPException(503, "TELEGRAM_BOT_TOKEN تنظیم نشده")
+    async with httpx.AsyncClient(timeout=90) as c:
+        r = await c.post(
+            f"https://api.telegram.org/bot{token}/{method}",
+            json=payload,
+        )
+        d = r.json()
+    if not d.get("ok"):
+        raise HTTPException(502, f"Telegram API error: {d.get('description', 'unknown')}")
+    return d
+
+
+async def _tg_send_document(chat_id: int, filename: str, content: bytes, caption: str) -> None:
+    """Upload a file to the user's Telegram chat via multipart sendDocument."""
+    import httpx
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        raise HTTPException(503, "TELEGRAM_BOT_TOKEN تنظیم نشده")
+    async with httpx.AsyncClient(timeout=120) as c:
+        r = await c.post(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data={"chat_id": str(chat_id), "caption": caption},
+            files={"document": (filename, content, "application/octet-stream")},
+        )
+        d = r.json()
+    if not d.get("ok"):
+        raise HTTPException(502, f"Telegram API error: {d.get('description', 'unknown')}")
+
+
+async def _send_pdf_to_telegram(chat_id: int, run_id: str, user: User, db: AsyncSession) -> None:
+    """Build the backtest PDF and send it to the user's Telegram chat."""
+    detail = await get_run_detail(run_id=run_id, user=user, db=db, full=True)
+    if detail.get("has_factor_artifacts"):
+        try:
+            pool = get_pool()
+            detail["factor_report"] = await pool.request(db, "GET", f"/runs/{run_id}/factor")
+        except Exception:
+            pass
+    from app.pdf_report import build_backtest_pdf  # type: ignore
+
+    try:
+        pdf_bytes = build_backtest_pdf(detail)
+    except Exception as exc:
+        raise HTTPException(500, f"خطا در ساخت PDF: {exc}")
+    caption = f"📊 گزارش بک‌تست — {detail.get('strategy_name') or run_id[:24]}"
+    await _tg_send_document(chat_id, f"backtest_{run_id[:24]}.pdf", pdf_bytes, caption)
+
+
+@app.post("/api/v1/vibe/runs/{run_id}/send-to-telegram")
+async def run_send_to_telegram(run_id: str, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+    """Send the backtest PDF straight into the user's Telegram chat (mobile-safe)."""
+    if not user.telegram_id:
+        raise HTTPException(400, "حساب شما به تلگرام متصل نیست")
+    await _send_pdf_to_telegram(user.telegram_id, run_id, user, db)
+    return {"ok": True, "chat_id": user.telegram_id}
+
+
+@app.post("/api/v1/vibe/runs/{run_id}/code/send-to-telegram")
+async def run_code_send_to_telegram(
+    run_id: str,
+    body: dict | None = None,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a strategy source file straight into the user's Telegram chat."""
+    if not user.telegram_id:
+        raise HTTPException(400, "حساب شما به تلگرام متصل نیست")
+    file = str((body or {}).get("file") or "signal_engine.py")[:64]
+    data = await run_code(run_id=run_id, user=user, db=db)  # ownership-checked
+    if file.endswith(".pine"):
+        pine = data.get("pine") or {}
+        if not pine.get("exists"):
+            raise HTTPException(404, "فایل Pine برای این اجرا موجود نیست")
+        code_bytes = (pine.get("content") or "").encode()
+    else:
+        files = data.get("files") or {}
+        if file not in files:
+            raise HTTPException(404, "فایل یافت نشد")
+        code_bytes = (files.get(file) or "").encode()
+    if not code_bytes:
+        raise HTTPException(404, "فایل خالی است")
+    await _tg_send_document(
+        user.telegram_id,
+        file if file.endswith(".py") else f"{file}.py",
+        code_bytes,
+        f"💻 کد استراتژی — {file}",
+    )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

@@ -47,13 +47,12 @@ export const getSwarmRun = (id: string) => api<SwarmRunStatus>(`/api/v1/vibe/swa
 export const listSwarmRuns = () => api<SwarmRunRow[]>(`/api/v1/vibe/swarm/runs`);
 
 export async function downloadSwarmPdf(id: string) {
-  const { smartDownload } = await import("@/api/client");
-  await smartDownload(
-    `/api/v1/vibe/swarm/runs/${id}/pdf?_=${Date.now()}`,
-    `swarm_${id.slice(0, 16)}.pdf`,
-    `/api/v1/vibe/swarm/runs/${id}/pdf-token`,
-    { kind: "pdf" },
-  );
+  const { inTelegramWebApp, authDownload, api } = await import("@/api/client");
+  if (inTelegramWebApp()) {
+    await api(`/api/v1/vibe/swarm/runs/${id}/send-to-telegram`, { method: "POST" });
+    return;
+  }
+  await authDownload(`/api/v1/vibe/swarm/runs/${id}/pdf?_=${Date.now()}`, `swarm_${id.slice(0, 16)}.pdf`);
 }
 
 /* ------------------------ Persian form knowledge base ---------------------- */

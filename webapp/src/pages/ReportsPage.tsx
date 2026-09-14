@@ -4,7 +4,7 @@ import {
   BarChart3, Copy, Download, FileCode2, FileText, X, TrendingUp, Percent,
   Activity, Target, Trophy, Wallet, Flame, Scale, Calendar, Check, Code2,
 } from "lucide-react";
-import { api, auth, smartDownload, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
+import { api, auth, inTelegramWebApp, smartDownload, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
 import { faNum, fmtCls, fmtPct } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { CardSkeleton, EmptyState, StatCard } from "@/components/ui/primitives";
@@ -144,6 +144,7 @@ export default function ReportsPage() {
 function ReportModal({ runId, onClose }: { runId: string; onClose: () => void }) {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
   const [chartUrl, setChartUrl] = useState<string | null>(null);
   const [code, setCode] = useState<CodeData | null>(null);
   const [codeOpen, setCodeOpen] = useState(false);
@@ -202,6 +203,13 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
   const downloadPdf = async () => {
     setPdfBusy(true);
     try {
+      // inside Telegram (mobile): bot sends the file directly into the chat — 100% reliable
+      if (inTelegramWebApp()) {
+        const r = await api<Record<string, unknown>>(`/api/v1/vibe/runs/${runId}/send-to-telegram`, { method: "POST" });
+        if (!r?.ok) throw new Error("send failed");
+        setNotice("✅ گزارش PDF به چت تلگرام شما ارسال شد");
+        return;
+      }
       const ok = await smartDownload(
         `/api/v1/vibe/runs/${runId}/pdf?_=${Date.now()}`,
         `backtest_${runId}.pdf`,
@@ -209,18 +217,33 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
         { kind: "pdf" },
       );
       if (!ok) setErr("دانلود ناموفق بود — دوباره تلاش کن");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "ارسال به تلگرام ناموفق بود");
     } finally {
       setPdfBusy(false);
     }
   };
   const downloadCode = async () => {
-    const ok = await smartDownload(
-      `/api/v1/vibe/runs/${runId}/code/download?file=${encodeURIComponent(activeFile)}&_=${Date.now()}`,
-      activeFile,
-      `/api/v1/vibe/runs/${runId}/pdf-token`,
-      { kind: "code", file: activeFile },
-    );
-    if (!ok) setErr("دانلود ناموفق بود — دوباره تلاش کن");
+    try {
+      if (inTelegramWebApp()) {
+        const r = await api<Record<string, unknown>>(`/api/v1/vibe/runs/${runId}/code/send-to-telegram`, {
+          method: "POST",
+          body: JSON.stringify({ file: activeFile }),
+        });
+        if (!r?.ok) throw new Error("send failed");
+        setNotice("✅ کد استراتژی به چت تلگرام شما ارسال شد");
+        return;
+      }
+      const ok = await smartDownload(
+        `/api/v1/vibe/runs/${runId}/code/download?file=${encodeURIComponent(activeFile)}&_=${Date.now()}`,
+        activeFile,
+        `/api/v1/vibe/runs${runId}/pdf-token`,
+        { kind: "code", file: activeFile },
+      );
+      if (!ok) setErr("دانلود ناموفق بود — دوباره تلاش کن");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "ارسال به تلگرام ناموفق بود");
+    }
   };
 
   const metricBox = (
@@ -268,6 +291,9 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
           </button>
         </div>
 
+        {notice ? (
+          <div className="rounded-xl border border-pos/25 bg-pos/10 p-4 text-[13px] font-semibold text-pos">{notice}</div>
+        ) : null}
         {err ? (
           <div className="rounded-xl border border-neg/25 bg-neg/10 p-4 text-[13px] font-semibold text-neg">❌ {err}</div>
         ) : !detail ? (
