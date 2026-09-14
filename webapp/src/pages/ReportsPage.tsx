@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   BarChart3, Copy, Download, FileCode2, FileText, X, TrendingUp, Percent,
-  Activity, Target, Trophy, Wallet, Flame, Scale, Calendar, Check, Code2,
+  Activity, Target, Trophy, Wallet, Flame, Scale, Calendar, Check, Code2, Send,
 } from "lucide-react";
 import { api, auth, inTelegramWebApp, openDownloadToken, smartDownload, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
 import { faNum, fmtCls, fmtPct } from "@/lib/utils";
@@ -208,7 +208,7 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
         // 1) official Telegram native popup (downloadFile) — best UX
         const ok = await openDownloadToken(`/api/v1/vibe/runs/${runId}/pdf-token`, { kind: "pdf" });
         if (ok) {
-          setNotice("✅ فایل PDF برای دانلود آماده شد (پاپ‌آپ تلگرام)");
+          setNotice("✅ دانلود شد — در مسیر Download/Telegram (اندروید) یا Files ← Telegram (آیفون) ذخیره می‌شود");
           return;
         }
         // 2) fallback: bot sends the file straight into the chat — always works
@@ -230,6 +230,17 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
       setPdfBusy(false);
     }
   };
+  /** Telegram-only: deliver the PDF into the chat (persistent, easy to share). */
+  const sendPdfToChat = async () => {
+    try {
+      const r = await api<Record<string, unknown>>(`/api/v1/vibe/runs/${runId}/send-to-telegram`, { method: "POST" });
+      if (!r?.ok) throw new Error("send failed");
+      setErr("");
+      setNotice("✅ گزارش PDF به چت تلگرام شما ارسال شد");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "ارسال به تلگرام ناموفق بود");
+    }
+  };
   const downloadCode = async () => {
     try {
       if (inTelegramWebApp()) {
@@ -238,7 +249,7 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
           file: activeFile,
         });
         if (ok) {
-          setNotice("✅ کد استراتژی برای دانلود آماده شد (پاپ‌آپ تلگرام)");
+          setNotice("✅ دانلود شد — در مسیر Download/Telegram (اندروید) یا Files ← Telegram (آیفون) ذخیره می‌شود");
           return;
         }
         const r = await api<Record<string, unknown>>(`/api/v1/vibe/runs/${runId}/code/send-to-telegram`, {
@@ -256,6 +267,20 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
         { kind: "code", file: activeFile },
       );
       if (!ok) setErr("دانلود ناموفق بود — دوباره تلاش کن");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "ارسال به تلگرام ناموفق بود");
+    }
+  };
+  /** Telegram-only: deliver the code file into the chat. */
+  const sendCodeToChat = async () => {
+    try {
+      const r = await api<Record<string, unknown>>(`/api/v1/vibe/runs/${runId}/code/send-to-telegram`, {
+        method: "POST",
+        body: JSON.stringify({ file: activeFile }),
+      });
+      if (!r?.ok) throw new Error("send failed");
+      setErr("");
+      setNotice("✅ کد استراتژی به چت تلگرام شما ارسال شد");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "ارسال به تلگرام ناموفق بود");
     }
@@ -355,6 +380,14 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
               </Button>
             </div>
 
+            {/* inside Telegram: also offer direct chat delivery (file lands in the bot chat) */}
+            {inTelegramWebApp() && (
+              <Button size="sm" variant="outline" className="mt-2 w-full gap-2" onClick={sendPdfToChat}>
+                <Send size={14} />
+                دریافت PDF در چت تلگرام (برای اشتراک‌گذاری)
+              </Button>
+            )}
+
             {/* code viewer */}
             <AnimatePresence initial={false}>
               {codeOpen && code && (
@@ -403,6 +436,12 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
                             دانلود {activeFile.endsWith(".pine") ? ".pine" : ".py"}
                           </Button>
                         </div>
+                        {inTelegramWebApp() && (
+                          <Button size="sm" variant="ghost" className="w-full gap-2 border-t border-line" onClick={sendCodeToChat}>
+                            <Send size={14} />
+                            دریافت {activeFile.endsWith(".pine") ? "Pine" : "کد"} در چت تلگرام
+                          </Button>
+                        )}
                       </>
                     )}
                   </div>
