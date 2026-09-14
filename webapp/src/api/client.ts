@@ -165,7 +165,7 @@ export async function openDownloadToken(
     // 1) official Telegram native download popup (Bot API 8.0+):
     //    downloadFile({url, file_name}, callback) — object signature, HTTPS absolute URL
     if (tg?.downloadFile) {
-      return await new Promise<boolean>((resolve) => {
+      const accepted = await new Promise<boolean>((resolve) => {
         let settled = false;
         const done = (ok: boolean) => {
           if (!settled) {
@@ -180,6 +180,8 @@ export async function openDownloadToken(
           done(false);
         }
       });
+      if (accepted) return true;
+      // declined/unsupported → fall through to openLink
     }
     // 2) Telegram openLink → system browser
     if (tg?.openLink) {

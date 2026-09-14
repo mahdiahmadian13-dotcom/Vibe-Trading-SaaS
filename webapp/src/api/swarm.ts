@@ -47,13 +47,10 @@ export const getSwarmRun = (id: string) => api<SwarmRunStatus>(`/api/v1/vibe/swa
 export const listSwarmRuns = () => api<SwarmRunRow[]>(`/api/v1/vibe/swarm/runs`);
 
 export async function downloadSwarmPdf(id: string) {
-  const { inTelegramWebApp, authDownload, api, openDownloadToken } = await import("@/api/client");
+  const { inTelegramWebApp, authDownload, openDownloadToken } = await import("@/api/client");
   if (inTelegramWebApp()) {
-    // 1) official Telegram native popup — best UX
-    const ok = await openDownloadToken(`/api/v1/vibe/swarm/runs/${id}/pdf-token`, { kind: "pdf" });
-    if (ok) return;
-    // 2) fallback: bot sends the file into the chat
-    await api(`/api/v1/vibe/swarm/runs/${id}/send-to-telegram`, { method: "POST" });
+    // official Telegram native popup → openLink fallback (both inside openDownloadToken)
+    await openDownloadToken(`/api/v1/vibe/swarm/runs/${id}/pdf-token`, { kind: "pdf" });
     return;
   }
   await authDownload(`/api/v1/vibe/swarm/runs/${id}/pdf?_=${Date.now()}`, `swarm_${id.slice(0, 16)}.pdf`);

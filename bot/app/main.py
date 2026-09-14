@@ -115,12 +115,21 @@ async def del_user_token(user_id: int):
 # Keyboards
 # ============================================================================
 
-def webapp_kb() -> InlineKeyboardMarkup:
-    """Hero keyboard — Web App first, always visible."""
+def webapp_kb(ref_code: str = "") -> InlineKeyboardMarkup:
+    """Hero keyboard — Web App first, always visible.
+
+    ref_code: when the user arrived via a ?start=<code> deep link, we thread
+    the code into the WebApp URL (?ref=) so the gateway sees the attribution
+    even on first open (browser WebApp URL params, not initData start_param).
+    """
     if WEBAPP_URL:
+        url = WEBAPP_URL
+        if ref_code:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}ref={ref_code}"
         rows = [[InlineKeyboardButton(
             text="🚀 ورود به پلتفرم",
-            web_app=WebAppInfo(url=WEBAPP_URL),
+            web_app=WebAppInfo(url=url),
         )]]
     else:
         # Fallback when no HTTPS WebApp URL is configured: plain link button
@@ -210,22 +219,26 @@ router = Router()
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    """Hero welcome. /start ref_<code> captures referral attribution."""
+    """Hero welcome. /start <ref_code> captures referral attribution.
+
+    Accepts BOTH the gateway link format (?start=<code>) and the legacy
+    ref_-prefixed format (?start=ref_<code>) — the official invite link is
+    t.me/<bot>?start=<code> (no prefix).
+    """
     payload = message.text.split(" ", 1)[1].strip() if " " in message.text else ""
-    start_param = payload if payload.startswith("ref_") else None
+    if payload.startswith("ref_"):
+        payload = payload[4:]
+    start_param = payload if len(payload) >= 4 else None  # ref codes are ≥4 chars
 
     seen_before = await get_user_token(message.from_user.id)
-    txt = WELCOME_BACK if seen_before else WELCOME_NEW
-    kb = webapp_kb()
 
     if start_param:
         # remember the ref code so the WebApp can pick it up via /start deep link
         r = await get_redis()
         await r.set(f"tg:{message.from_user.id}:ref", start_param, ex=60 * 60 * 24)
-        # if the user is new, don't say "welcome back"
-        if not seen_before:
-            txt = WELCOME_NEW
 
+    kb = webapp_kb(start_param or "")
+    txt = WELCOME_BACK if seen_before else WELCOME_NEW
     await message.answer(txt, reply_markup=kb, parse_mode="Markdown")
 
 
