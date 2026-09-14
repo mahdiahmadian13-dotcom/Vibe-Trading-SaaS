@@ -35,6 +35,12 @@ export const sendMessage = (id: string, content: string) =>
 export const cancelRun = (id: string) =>
   api<{ status?: string }>(`/api/v1/vibe/sessions/${id}/cancel`, { method: "POST" });
 
+export const renameSession = (id: string, title: string) =>
+  api<{ status: string; title: string }>(`/api/v1/vibe/sessions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+
 /** Wait until a NEW assistant message (index >= preCount) arrives. */
 export async function waitForNewAnswer(
   id: string,

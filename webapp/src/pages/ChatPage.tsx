@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { MessageSquare, Plus, Send, Square, History, ChevronRight } from "lucide-react";
+import { MessageSquare, Plus, Send, Square, History, ChevronRight, Pencil, Check, X } from "lucide-react";
 import {
   listSessions, createSession, getMessages, sendMessage, cancelRun,
-  waitForNewAnswer, sid,
+  waitForNewAnswer, sid, renameSession,
   type ChatMessage, type SessionRow,
 } from "@/api/chat";
 import { faNum } from "@/lib/utils";
@@ -23,6 +23,8 @@ export default function ChatPage() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   const [couponOut, setCouponOut] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameVal, setRenameVal] = useState("");
   const stopRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -39,6 +41,28 @@ export default function ChatPage() {
   useEffect(() => { scrollDown(); }, [bubbles]);
 
   /* ------------------------------ sessions ------------------------------- */
+
+  /* ------------------------------ rename ---------------------------------- */
+
+  const startRename = (s: SessionRow) => {
+    setRenamingId(sid(s));
+    setRenameVal(s.title || s.name || "");
+  };
+
+  const doRename = async () => {
+    const id = renamingId;
+    if (!id) return;
+    const title = renameVal.trim();
+    if (!title) return;
+    try {
+      await renameSession(id, title);
+      setSessions((prev) => (prev || []).map((s) => (sid(s) === id ? { ...s, title } : s)));
+      setRenamingId(null);
+    } catch (e) {
+      setBubbles((b) => [...(b || []), { role: "bot", text: "❌ تغییر نام ناموفق: " + (e as Error).message }]);
+      setRenamingId(null);
+    }
+  };
 
   const openSession = async (id: string) => {
     setCurrent(id);
@@ -106,6 +130,19 @@ export default function ChatPage() {
       const preCount = Array.isArray(pre) ? pre.length : 0;
 
       await sendMessage(id, text);
+
+      // Auto-title: name the session from the first message (best-effort)
+      setSessions((prev) => {
+        const me = (prev || []).find((s) => sid(s) === id);
+        const t = me?.title || me?.name || "";
+        const isDefault = !t || t === "چت جدید" || t.startsWith("گفتگوی ");
+        if (isDefault) {
+          const auto = text.length > 34 ? text.slice(0, 34).trim() + "…" : text;
+          renameSession(id, auto).catch(() => {});
+          return (prev || []).map((s) => (sid(s) === id ? { ...s, title: auto } : s));
+        }
+        return prev;
+      });
 
       const answer = await waitForNewAnswer(id, preCount, {
         maxWait: 240,
@@ -195,18 +232,51 @@ export default function ChatPage() {
               )}
               {(sessions || []).map((s) => {
                 const id = sid(s);
-                return (
-                  <button
+                const isRenaming = renamingId === id;
+                return isRenaming ? (
+                  <div key={id} className="flex items-center gap-2 rounded-lg bg-white/[.04] px-3 py-2">
+                    <input
+                      autoFocus
+                      value={renameVal}
+                      onChange={(e) => setRenameVal(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") doRename();
+                        if (e.key === "Escape") setRenamingId(null);
+                      }}
+                      maxLength={80}
+                      placeholder="نام جدید گفتگو…"
+                      className="h-8 flex-1 rounded-lg border border-line bg-black/30 px-2.5 text-[12.5px] outline-none focus:border-brand/50"
+                    />
+                    <button onClick={doRename} aria-label="ثبت نام"
+                      className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand/20 text-indigo-200 transition-colors hover:bg-brand/30">
+                      <Check size={13} />
+                    </button>
+                    <button onClick={() => setRenamingId(null)} aria-label="انصراف"
+                      className="flex h-7 w-7 items-center justify-center rounded-lg border border-line text-muted transition-colors hover:text-ink">
+                      <X size={13} />
+                    </button>
+                  </div>
+                ) : (
+                  <div
                     key={id}
-                    onClick={() => openSession(id)}
-                    className={`flex w-full items-center justify-between rounded-lg px-3.5 py-2.5 text-right text-[12.5px] transition-colors ${current === id ? "bg-brand/10 font-bold text-indigo-200" : "hover:bg-white/[.04]"}`}
+                    className={`group flex w-full items-center justify-between gap-2 rounded-lg px-3.5 py-2.5 text-right text-[12.5px] transition-colors ${current === id ? "bg-brand/10 font-bold text-indigo-200" : "hover:bg-white/[.04]"}`}
                   >
-                    <span className="flex items-center gap-2">
-                      <ChevronRight size={13} className="text-muted" />
-                      {s.title || s.name || "گفتگو"}
+                    <button onClick={() => openSession(id)} className="flex min-w-0 flex-1 items-center gap-2">
+                      <ChevronRight size={13} className="shrink-0 text-muted" />
+                      <span className="truncate">{s.title || s.name || "گفتگو"}</span>
+                    </button>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <span className="text-[10.5px] text-muted/70">{s.created_at ? new Date(s.created_at).toLocaleDateString("fa-IR") : ""}</span>
+                      <button
+                        onClick={() => startRename(s)}
+                        aria-label="تغییر نام گفتگو"
+                        title="تغییر نام"
+                        className="flex h-6 w-6 items-center justify-center rounded-md text-muted/60 opacity-0 transition-all hover:bg-white/[.06] hover:text-ink group-hover:opacity-100"
+                      >
+                        <Pencil size={12} />
+                      </button>
                     </span>
-                    <span className="text-[10.5px] text-muted/70">{s.created_at ? new Date(s.created_at).toLocaleDateString("fa-IR") : ""}</span>
-                  </button>
+                  </div>
                 );
               })}
             </Card>

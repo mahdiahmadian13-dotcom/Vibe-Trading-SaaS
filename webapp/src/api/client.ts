@@ -118,7 +118,8 @@ export async function telegramAutoLogin(): Promise<boolean> {
   }
 }
 
-export const getRuns = () => api<RunRow[]>("/api/v1/vibe/runs");
+export const getRuns = (backtestsOnly = true) =>
+  api<RunRow[]>(`/api/v1/vibe/runs${backtestsOnly ? "?backtests_only=true" : ""}`);
 export const getRun = (id: string) => api<RunDetail>(`/api/v1/vibe/runs/${id}`);
 export const getSessions = () => api<SessionRow[]>("/api/v1/vibe/sessions");
 

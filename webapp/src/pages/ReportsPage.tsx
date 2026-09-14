@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, Copy, Download, FileCode2, FileText, X } from "lucide-react";
+import {
+  BarChart3, Copy, Download, FileCode2, FileText, X, TrendingUp, Percent,
+  Activity, Target, Trophy, Wallet, Flame, Scale, Calendar, Check, Code2,
+} from "lucide-react";
 import { api, auth, authDownload, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
 import { faNum, fmtCls, fmtPct } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
@@ -32,10 +35,9 @@ export default function ReportsPage() {
 
   const stats = useMemo(() => {
     const list = runs || [];
-    const bts = list.filter((r) => r.total_return != null || r.sharpe != null);
-    const wins = bts.filter((r) => (r.total_return ?? 0) > 0).length;
-    const avg = bts.length ? bts.reduce((a, r) => a + (r.total_return ?? 0), 0) / bts.length : null;
-    return { total: list.length, bts: bts.length, wins, avg };
+    const wins = list.filter((r) => (r.total_return ?? 0) > 0).length;
+    const avg = list.length ? list.reduce((a, r) => a + (r.total_return ?? 0), 0) / list.length : null;
+    return { total: list.length, wins, avg };
   }, [runs]);
 
   return (
@@ -45,7 +47,7 @@ export default function ReportsPage() {
           <BarChart3 size={20} className="text-brand" /> گزارش‌های بک‌تست
         </h1>
         <p className="mt-1.5 text-[12.5px] leading-6 text-muted md:text-[13.5px]">
-          نتایج بک‌تست‌ها، نمودار ارزش پرتفوی، کد استراتژی و گزارش PDF
+          نتایج بک‌تست‌های تکمیل‌شده — نمودار ارزش پرتفوی، کد استراتژی و گزارش PDF
         </p>
       </header>
 
@@ -68,14 +70,13 @@ export default function ReportsPage() {
       ) : runs.length === 0 ? (
         <EmptyState
           icon="📭"
-          title="هنوز بک‌تستی نداری"
-          desc="از بخش چت شروع کن — استراتژی‌ات را بگو تا تیم AI بک‌تست بگیرد."
+          title="هنوز بک‌تستی تکمیل نشده"
+          desc="از بخش چت شروع کن — وقتی بک‌تست انجام شود، گزارش کامل اینجا ظاهر می‌شود (PDF + کد استراتژی)."
         />
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
-            <StatCard label="کل اجراها" value={faNum(stats.total)} />
-            <StatCard label="بک‌تست‌های واقعی" value={faNum(stats.bts)} tone="brand" />
+            <StatCard label="بک‌تست‌های تکمیل‌شده" value={faNum(stats.total)} tone="brand" />
             <StatCard label="سودده" value={faNum(stats.wins)} tone="pos" />
             <StatCard
               label="میانگین بازده"
@@ -85,7 +86,7 @@ export default function ReportsPage() {
           </div>
           <div className="mt-4 grid gap-3 md:grid-cols-2 md:gap-4 lg:grid-cols-3">
             {runs.map((r) => {
-              const hasM = r.total_return != null || r.sharpe != null;
+              const pos = (r.total_return ?? 0) > 0;
               return (
                 <motion.button
                   key={r.run_id}
@@ -95,11 +96,11 @@ export default function ReportsPage() {
                   whileTap={{ scale: 0.985 }}
                   transition={{ duration: 0.3 }}
                   onClick={() => setOpenId(r.run_id)}
-                  className={`w-full rounded-xl2 border border-line bg-panel/70 p-4 text-right backdrop-blur-xl transition-all duration-300 active:border-brand/50 md:hover:-translate-y-1 md:hover:border-brand/40 md:hover:shadow-[0_16px_40px_-12px_rgba(0,0,0,.6)] md:p-5 ${hasM ? "" : "opacity-70"}`}
+                  className="group w-full rounded-xl2 border border-line bg-panel/70 p-4 text-right backdrop-blur-xl transition-all duration-300 active:border-brand/50 md:hover:-translate-y-1 md:hover:border-brand/40 md:hover:shadow-[0_16px_40px_-12px_rgba(0,0,0,.6)] md:p-5"
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <Badge tone={hasM ? "bt" : "chat"}>{hasM ? "بک‌تست" : "چت"}</Badge>
+                      <Badge tone="bt">بک‌تست</Badge>
                       <Badge tone={statusTone(r.status)}>{statusFa(r.status)}</Badge>
                     </div>
                     <span dir="ltr" className="truncate text-[10px] text-muted/60">{r.run_id}</span>
@@ -117,6 +118,12 @@ export default function ReportsPage() {
                     {(r.start_date || r.end_date) && (
                       <span dir="ltr" className="text-muted/80">{r.start_date} → {r.end_date}</span>
                     )}
+                  </div>
+                  <div className={`mt-3 h-1 w-full overflow-hidden rounded-full bg-white/[.06] ${pos ? "" : "opacity-70"}`}>
+                    <div
+                      className={`h-full rounded-full ${pos ? "bg-gradient-to-l from-emerald-400 to-emerald-600" : "bg-gradient-to-l from-rose-400 to-rose-600"}`}
+                      style={{ width: `${Math.min(100, Math.abs(r.total_return ?? 0) * 2)}%` }}
+                    />
                   </div>
                 </motion.button>
               );
@@ -183,7 +190,7 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
     return names;
   })();
   const activeSrc = activeFile === "strategy.pine" ? code?.pine?.content || "" : code?.files?.[activeFile] || "";
-  const lineCount = activeSrc ? activeSrc.split("\n").length : 0;
+  const codeLines = activeSrc ? activeSrc.split("\n") : [];
 
   const copyCode = () => {
     navigator.clipboard.writeText(activeSrc).then(
@@ -204,11 +211,16 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
     ).catch(() => {});
   };
 
-  const metricBox = (label: string, value: string | null, tone?: string) =>
+  const metricBox = (
+    label: string, value: string | null, tone?: string, Icon?: typeof TrendingUp,
+  ) =>
     value == null ? null : (
-      <div className="rounded-xl border border-line bg-panel/70 p-3.5">
-        <div className="text-[11.5px] font-semibold text-muted">{label}</div>
-        <div className={`mt-1 text-[18px] font-extrabold ${tone || ""}`}>{value}</div>
+      <div className="group rounded-xl border border-line bg-gradient-to-b from-white/[.04] to-transparent p-3 transition-all hover:border-brand/30">
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-muted">
+          {Icon && <Icon size={13} className="text-brand/80" />}
+          {label}
+        </div>
+        <div className={`mt-1.5 text-[17px] font-extrabold tracking-tight ${tone || ""}`}>{value}</div>
       </div>
     );
 
@@ -224,12 +236,19 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
         onClick={(e) => e.stopPropagation()}
         className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-t-3xl border border-line bg-panel2 p-5 md:rounded-3xl md:p-7"
       >
-        <div className="mb-4 flex items-start justify-between gap-3">
+        {/* header */}
+        <div className="mb-5 flex items-start justify-between gap-3 border-b border-line pb-4">
           <div className="min-w-0">
-            <div className="text-[15px] font-extrabold leading-7">
-              {hasMetrics ? "📊 گزارش بک‌تست" : "💬 خروجی"} — {detail?.prompt || runId}
+            <div className="flex items-center gap-2">
+              <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-brand/15 ring-1 ring-inset ring-brand/30">
+                <BarChart3 size={16} className="text-brand" />
+              </span>
+              <div className="text-[14.5px] font-extrabold leading-6">گزارش بک‌تست</div>
             </div>
-            <div dir="ltr" className="mt-0.5 text-right text-[11px] text-muted/70">{runId}</div>
+            <div className="mt-2 line-clamp-2 text-[12.5px] leading-6 text-muted">
+              {detail?.prompt || "—"}
+            </div>
+            <div dir="ltr" className="mt-1 text-right text-[10.5px] text-muted/60">{runId}</div>
           </div>
           <button onClick={onClose} aria-label="بستن"
             className="shrink-0 rounded-lg border border-line bg-white/[.03] p-2 text-muted transition-colors hover:text-ink">
@@ -247,66 +266,88 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
           </div>
         ) : (
           <>
+            {/* metrics grid */}
             {hasMetrics && (
               <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-                {metricBox("بازده کل", m.total_return != null ? fmtPct(m.total_return) : null, fmtCls(m.total_return))}
-                {metricBox("سالانه", m.annual_return != null ? fmtPct(m.annual_return) : null, fmtCls(m.annual_return))}
-                {metricBox("شارپ", m.sharpe != null ? m.sharpe.toFixed(2) : null)}
-                {metricBox("سورتینو", m.sortino != null ? m.sortino.toFixed(2) : null)}
-                {metricBox("حداکثر افت", m.max_drawdown != null ? fmtPct(m.max_drawdown) : null, "text-neg")}
-                {metricBox("نرخ برد", m.win_rate != null ? `${(m.win_rate * 100).toFixed(0)}%` : null)}
-                {metricBox("معاملات", m.trade_count != null ? faNum(m.trade_count) : null)}
-                {metricBox("ارزش نهایی", m.final_value != null ? `$${Number(m.final_value).toLocaleString()}` : null)}
+                {metricBox("بازده کل", m.total_return != null ? fmtPct(m.total_return) : null, fmtCls(m.total_return), TrendingUp)}
+                {metricBox("بازده سالانه", m.annual_return != null ? fmtPct(m.annual_return) : null, fmtCls(m.annual_return), Percent)}
+                {metricBox("شارپ", m.sharpe != null ? m.sharpe.toFixed(2) : null, undefined, Activity)}
+                {metricBox("سورتینو", m.sortino != null ? m.sortino.toFixed(2) : null, undefined, Scale)}
+                {metricBox("حداکثر افت", m.max_drawdown != null ? fmtPct(m.max_drawdown) : null, "text-neg", Flame)}
+                {metricBox("نرخ برد", m.win_rate != null ? `${(m.win_rate * 100).toFixed(0)}%` : null, undefined, Target)}
+                {metricBox("تعداد معاملات", m.trade_count != null ? faNum(m.trade_count) : null, undefined, Trophy)}
+                {metricBox("ارزش نهایی", m.final_value != null ? `$${Number(m.final_value).toLocaleString()}` : null, undefined, Wallet)}
               </div>
             )}
 
+            {/* equity chart */}
             {chartUrl && (
-              <img src={chartUrl} alt="نمودار ارزش پرتفوی" className="mt-4 w-full rounded-xl border border-line" />
-            )}
-
-            {hasMetrics && (
-              <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-                <Button size="lg" className="flex-1" onClick={downloadPdf} disabled={pdfBusy}>
-                  <FileText size={18} /> {pdfBusy ? "در حال آماده‌سازی…" : "دانلود PDF"}
-                </Button>
-                <Button size="lg" variant="outline" className="flex-1" onClick={loadCode}>
-                  <FileCode2 size={18} /> {codeOpen ? "بستن کد استراتژی" : "مشاهده کد استراتژی"}
-                </Button>
+              <div className="mt-4 overflow-hidden rounded-xl border border-line bg-black/30">
+                <div className="flex items-center gap-2 border-b border-line px-3.5 py-2.5 text-[11.5px] font-bold text-muted">
+                  <TrendingUp size={13} className="text-brand" /> نمودار ارزش پرتفوی (Equity Curve)
+                </div>
+                <img src={chartUrl} alt="نمودار ارزش پرتفوی" className="w-full" />
               </div>
             )}
 
+            {/* action buttons */}
+            <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+              <Button size="lg" className="flex-1 gap-2" onClick={downloadPdf} disabled={pdfBusy}>
+                <FileText size={17} />
+                {pdfBusy ? "در حال آماده‌سازی…" : "دانلود گزارش PDF"}
+              </Button>
+              <Button size="lg" variant="outline" className="flex-1 gap-2" onClick={loadCode}>
+                <Code2 size={17} />
+                {codeOpen ? "بستن کد استراتژی" : "کد استراتژی"}
+              </Button>
+            </div>
+
+            {/* code viewer */}
             <AnimatePresence initial={false}>
               {codeOpen && code && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
                   className="overflow-hidden"
                 >
-                  <div className="mt-4 border-t border-line pt-4">
+                  <div className="mt-4 rounded-xl border border-line bg-black/40">
                     {codeNames.length === 0 ? (
-                      <div className="text-[12.5px] text-muted">کد استراتژی برای این گزارش موجود نیست.</div>
+                      <div className="p-4 text-[12.5px] text-muted">کد استراتژی برای این گزارش موجود نیست.</div>
                     ) : (
                       <>
-                        <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
+                        {/* file tabs */}
+                        <div className="flex items-center gap-1.5 border-b border-line px-3 py-2.5">
                           {codeNames.map((n) => (
                             <button
                               key={n}
                               onClick={() => setActiveFile(n)}
-                              className={`rounded-lg border px-3 py-1.5 font-mono text-[11px] transition-colors ${n === activeFile ? "border-brand/50 bg-brand/15 text-indigo-200" : "border-line text-muted hover:text-ink"}`}
+                              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 font-mono text-[11px] transition-colors ${n === activeFile ? "border-brand/50 bg-brand/15 text-indigo-200" : "border-line text-muted hover:text-ink"}`}
                             >
+                              <FileCode2 size={11} />
                               {n}
                             </button>
                           ))}
-                          <span dir="ltr" className="mr-auto text-[10.5px] text-muted/70">{lineCount} lines</span>
+                          <span dir="ltr" className="mr-auto text-[10.5px] text-muted/70">{codeLines.length} lines</span>
                         </div>
-                        <pre dir="ltr" className="max-h-[38dvh] overflow-auto rounded-xl border border-line bg-black/40 p-4 text-left font-mono text-[11.5px] leading-7 text-slate-200">
-                          {activeSrc || "—"}
+                        {/* code with line numbers */}
+                        <pre dir="ltr" className="max-h-[38dvh] overflow-auto p-4 text-left font-mono text-[11.5px] leading-7 text-slate-200">
+                          <code>
+                            {codeLines.map((line, i) => (
+                              <div key={i} className="flex">
+                                <span className="w-10 shrink-0 select-none pr-3 text-right text-slate-600">{i + 1}</span>
+                                <span className="whitespace-pre">{line || " "}</span>
+                              </div>
+                            ))}
+                          </code>
                         </pre>
-                        <div className="mt-3 flex flex-col gap-2.5 sm:flex-row">
-                          <Button variant="outline" className="flex-1" onClick={copyCode}>
-                            <Copy size={15} /> {copied ? "کپی شد ✅" : "کپی کد"}
+                        {/* code actions */}
+                        <div className="flex flex-col gap-2.5 border-t border-line p-3 sm:flex-row">
+                          <Button variant="outline" className="flex-1 gap-2" onClick={copyCode}>
+                            {copied ? <Check size={15} /> : <Copy size={15} />}
+                            {copied ? "کپی شد ✅" : "کپی کد"}
                           </Button>
-                          <Button variant="outline" className="flex-1" onClick={downloadCode}>
-                            <Download size={15} /> دانلود {activeFile.endsWith(".pine") ? ".pine" : ".py"}
+                          <Button variant="outline" className="flex-1 gap-2" onClick={downloadCode}>
+                            <Download size={15} />
+                            دانلود {activeFile.endsWith(".pine") ? ".pine" : ".py"}
                           </Button>
                         </div>
                       </>

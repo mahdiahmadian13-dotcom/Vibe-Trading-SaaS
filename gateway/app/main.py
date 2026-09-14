@@ -548,7 +548,7 @@ async def create_session(
     await _check_limit(db, user, "session")
 
     pool = get_pool()
-    result = await pool.request(db, "POST", "/sessions", json={"name": f"tg_{user.id}"})
+    result = await pool.request(db, "POST", "/sessions", json={"title": f"گفتگوی {user.username}"})
     session_id = result.get("session_id") or result.get("id")
 
     # Record ownership
@@ -648,6 +648,7 @@ async def get_messages(
 @app.get("/api/v1/vibe/runs")
 async def list_runs(
     session_id: str | None = Query(None),
+    backtests_only: bool = Query(False),
     user: User = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
@@ -661,6 +662,16 @@ async def list_runs(
     owned = await _owned_session_ids(db, user)
     if not user.is_admin:
         runs = [r for r in runs if r.get("session_id") in owned]
+
+    # Reports page shows only real backtests (runs that produced metrics).
+    # A new chat alone must NOT create a report entry — only completed
+    # backtests with metrics qualify. Chat-only runs stay visible in the
+    # chat view; the reports page is for downloadables (PDF + strategy code).
+    if backtests_only:
+        runs = [
+            r for r in runs
+            if (r.get("total_return") is not None or r.get("sharpe") is not None)
+        ]
 
     return runs
 
@@ -1558,6 +1569,23 @@ async def list_sessions(
     if not user.is_admin:
         sessions = [s for s in sessions if s.get("id") in owned or s.get("session_id") in owned]
     return sessions
+
+
+@app.patch("/api/v1/vibe/sessions/{session_id}")
+async def rename_session(
+    session_id: str,
+    body: dict,
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a chat session (ownership-checked; forwards to engine PATCH)."""
+    await _require_owned_session(db, user, session_id)
+    title = str(body.get("title", "")).strip()
+    if not title or len(title) > 80:
+        raise HTTPException(400, "عنوان گفتگو باید بین ۱ تا ۸۰ نویسه باشد")
+    pool = get_pool()
+    await pool.request(db, "PATCH", f"/sessions/{session_id}", json={"title": title})
+    return {"status": "renamed", "session_id": session_id, "title": title}
 
 
 @app.get("/api/v1/vibe/sessions/{session_id}/history")
