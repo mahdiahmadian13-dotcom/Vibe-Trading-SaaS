@@ -4,7 +4,7 @@ import {
   BarChart3, Copy, Download, FileCode2, FileText, X, TrendingUp, Percent,
   Activity, Target, Trophy, Wallet, Flame, Scale, Calendar, Check, Code2,
 } from "lucide-react";
-import { api, auth, inTelegramWebApp, smartDownload, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
+import { api, auth, inTelegramWebApp, openDownloadToken, smartDownload, getRun, getRuns, type RunDetail, type RunRow } from "@/api/client";
 import { faNum, fmtCls, fmtPct } from "@/lib/utils";
 import { Button } from "@/components/ui/Button";
 import { CardSkeleton, EmptyState, StatCard } from "@/components/ui/primitives";
@@ -202,9 +202,16 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
 
   const downloadPdf = async () => {
     setPdfBusy(true);
+    setNotice("");
     try {
-      // inside Telegram (mobile): bot sends the file directly into the chat — 100% reliable
       if (inTelegramWebApp()) {
+        // 1) official Telegram native popup (downloadFile) — best UX
+        const ok = await openDownloadToken(`/api/v1/vibe/runs/${runId}/pdf-token`, { kind: "pdf" });
+        if (ok) {
+          setNotice("✅ فایل PDF برای دانلود آماده شد (پاپ‌آپ تلگرام)");
+          return;
+        }
+        // 2) fallback: bot sends the file straight into the chat — always works
         const r = await api<Record<string, unknown>>(`/api/v1/vibe/runs/${runId}/send-to-telegram`, { method: "POST" });
         if (!r?.ok) throw new Error("send failed");
         setNotice("✅ گزارش PDF به چت تلگرام شما ارسال شد");
@@ -226,6 +233,14 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
   const downloadCode = async () => {
     try {
       if (inTelegramWebApp()) {
+        const ok = await openDownloadToken(`/api/v1/vibe/runs/${runId}/pdf-token`, {
+          kind: "code",
+          file: activeFile,
+        });
+        if (ok) {
+          setNotice("✅ کد استراتژی برای دانلود آماده شد (پاپ‌آپ تلگرام)");
+          return;
+        }
         const r = await api<Record<string, unknown>>(`/api/v1/vibe/runs/${runId}/code/send-to-telegram`, {
           method: "POST",
           body: JSON.stringify({ file: activeFile }),
@@ -237,7 +252,7 @@ function ReportModal({ runId, onClose }: { runId: string; onClose: () => void })
       const ok = await smartDownload(
         `/api/v1/vibe/runs/${runId}/code/download?file=${encodeURIComponent(activeFile)}&_=${Date.now()}`,
         activeFile,
-        `/api/v1/vibe/runs${runId}/pdf-token`,
+        `/api/v1/vibe/runs/${runId}/pdf-token`,
         { kind: "code", file: activeFile },
       );
       if (!ok) setErr("دانلود ناموفق بود — دوباره تلاش کن");

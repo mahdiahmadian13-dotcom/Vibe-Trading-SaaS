@@ -2668,6 +2668,8 @@ async def run_pdf_open(run_id: str, token: str, db: AsyncSession = Depends(get_d
         headers={
             "Content-Disposition": f'attachment; filename="backtest_{run_id}.pdf"',
             "Cache-Control": "no-store",
+            # Telegram WebApp downloadFile() requires this per official docs
+            "Access-Control-Allow-Origin": "https://web.telegram.org",
         },
     )
 
@@ -2696,6 +2698,8 @@ async def run_code_open(run_id: str, token: str, file: str = "signal_engine.py",
         headers={
             "Content-Disposition": f'attachment; filename="{file}"',
             "Cache-Control": "no-store",
+            # Telegram WebApp downloadFile() requires this per official docs
+            "Access-Control-Allow-Origin": "https://web.telegram.org",
         },
     )
 
@@ -2749,6 +2753,8 @@ async def swarm_pdf_open(run_id: str, token: str, db: AsyncSession = Depends(get
         headers={
             "Content-Disposition": f'attachment; filename="swarm_{run_id[:16]}.pdf"',
             "Cache-Control": "no-store",
+            # Telegram WebApp downloadFile() requires this per official docs
+            "Access-Control-Allow-Origin": "https://web.telegram.org",
         },
     )
 

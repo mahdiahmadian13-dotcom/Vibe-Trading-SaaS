@@ -69,7 +69,7 @@ type TelegramWebApp = {
   ready?: () => void;
   expand?: () => void;
   HapticFeedback?: { impactOccurred?: (s: string) => void };
-  downloadFile?: (url: string, file_name: string) => void;
+  downloadFile?: (params: { url: string; file_name: string }, callback?: (accepted: boolean) => void) => void;
   openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
   platform?: string;
 };
@@ -161,10 +161,25 @@ export async function openDownloadToken(
     if (!d?.url) return false;
     const full = new URL(d.url, window.location.origin).href;
     const tg = window.Telegram?.WebApp;
-    // 1) Telegram native download (works on mobile)
+    const file_name = opts.kind === "code" ? opts.file || "strategy.py" : "backtest.pdf";
+    // 1) official Telegram native download popup (Bot API 8.0+):
+    //    downloadFile({url, file_name}, callback) — object signature, HTTPS absolute URL
     if (tg?.downloadFile) {
-      tg.downloadFile(full, opts.kind === "code" ? opts.file || "strategy.py" : "backtest.pdf");
-      return true;
+      return await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const done = (ok: boolean) => {
+          if (!settled) {
+            settled = true;
+            resolve(ok);
+          }
+        };
+        try {
+          tg.downloadFile!({ url: full, file_name }, (accepted) => done(accepted !== false));
+          setTimeout(() => done(true), 8000); // popup closed without callback → assume ok
+        } catch {
+          done(false);
+        }
+      });
     }
     // 2) Telegram openLink → system browser
     if (tg?.openLink) {
