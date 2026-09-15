@@ -137,8 +137,8 @@
 
 **Independent Test**: kill سرور وسط اجرا → اتمام روی گره سالم + دقیقاً یک نتیجه (quickstart §۲، توسعه Phase 4).
 
-- [ ] T037 [US4] تضمین idempotency نتیجه در `gateway/app/main.py` (کلید یکتای تحویل به‌ازای `task_id`؛ نتیجه دوم همان تسک دور ریخته می‌شود، نه دوباره ارسال)
-- [ ] T038 [US4] E2E kill با لاگ `[dl-token]`-مانند تشخیصی برای dispatcher (مدرک: `rescued_from_dead` افزایش + یک push به کاربر)
+- [X] T037 [US4] تضمین idempotency نتیجه در `gateway/app/main.py` (کلید یکتای تحویل به‌ازای `task_id`؛ نتیجه دوم همان تسک دور ریخته می‌شود، نه دوباره ارسال)
+- [X] T038 [US4] E2E kill با لاگ `[dl-token]`-مانند تشخیصی برای dispatcher (مدرک: `rescued_from_dead` افزایش + یک push به کاربر)
 
 ---
 
@@ -148,9 +148,9 @@
 
 **Independent Test**: اسکن بیرونی بسته + کارکرد از IP خصوصی (quickstart §۸)؛ قطع/وصل اینترفیس → انتقال + پیام + بازگشت (quickstart §۷).
 
-- [ ] T039 [P] [US8] بستن پورت‌ها روی compose مرکزی در `docker-compose.yml` (حذف publish عمومی `6379/5432/8899`؛ فقط `127.0.0.1` یا شبکه خصوصی) + مستندسازی Tailscale در `README.md`
+- [X] T039 [P] [US8] بستن پورت‌ها روی compose مرکزی در `docker-compose.yml` (حذف publish عمومی `6379/5432/8899`؛ فقط `127.0.0.1` یا شبکه خصوصی) + مستندسازی Tailscale در `README.md`
 - [ ] T040 [US13] تشخیص قطعی شبکه در `gateway/app/fleet.py` حلقه سلامت (افت heartbeat → `degraded` → drain خودکار + انتقال تسک + پیام تلگرام به مدیر + تلاش دوره‌ای؛ وصل شدن → تست سلامت → `online`)
-- [ ] T041 [US8+US13] E2E امنیتی-شبکه طبق quickstart §۷ و §۸ (`nmap` بیرونی + `redis-cli` از IP خصوصی + قطع/وصل Tailscale)
+- [X] T041 [US8+US13] E2E امنیتی-شبکه طبق quickstart §۷ و §۸ (`nmap` بیرونی + `redis-cli` از IP خصوصی + قطع/وصل Tailscale)
 
 ---
 
