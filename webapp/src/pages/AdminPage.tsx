@@ -228,6 +228,7 @@
     const [err, setErr] = useState("");
     const [createOpen, setCreateOpen] = useState(false);
     const [editRow, setEditRow] = useState<AdminUserRow | null>(null);
+    const [rolesOpen, setRolesOpen] = useState(false);
     const [grantRow, setGrantRow] = useState<AdminUserRow | null>(null);
     const [pwdRow, setPwdRow] = useState<AdminUserRow | null>(null);
     const [pendingDelete, setPendingDelete] = useState<AdminUserRow | null>(null);
@@ -246,6 +247,7 @@
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="جستجو نام کاربری / موبایل…" className="w-full bg-transparent text-sm outline-none placeholder:text-muted" />
           </div>
           <Button onClick={() => setCreateOpen(true)} className="gap-1.5"><Plus size={14} /> کاربر جدید</Button>
+          <Button variant="outline" onClick={() => setRolesOpen(true)} className="gap-1.5"><Shield size={14} /> نقش‌ها</Button>
           <Button variant="outline" onClick={load} className="gap-1.5"><RefreshCw size={14} /> بروزرسانی</Button>
         </div>
 
@@ -287,6 +289,76 @@
         {grantRow && <GrantModal row={grantRow} onClose={() => setGrantRow(null)} onDone={() => { setGrantRow(null); onToast("پلن اعمال شد"); load(); }} />}
         {pwdRow && <ResetPwdModal row={pwdRow} onClose={() => setPwdRow(null)} onDone={() => { setPwdRow(null); onToast("رمز تغییر کرد"); }} />}
         {pendingDelete && <Confirm title="حذف کاربر" body={`آیا ${pendingDelete.username} حذف شود؟ تمام اشتراک‌ها و تسک‌های او پاک می‌شود.`} onCancel={() => setPendingDelete(null)} onConfirm={async () => { try { await adminApi.deleteUser(pendingDelete.id); onToast("حذف شد"); } catch (e) { onToast((e as Error).message); } setPendingDelete(null); load(); }} />}
+        {rolesOpen && <RolesModal onClose={() => setRolesOpen(false)} onToast={onToast} />}
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Roles modal (US-12): definable roles + permission flags + member assign
+  // ---------------------------------------------------------------------------
+  const PERM_LABELS: Record<string, string> = { dashboard: "مشاهده داشبورد", servers: "مدیریت سرور", users: "مدیریت کاربر", secrets: "دیدن سکرت", updates: "آپدیت ناوگان" };
+  function RolesModal({ onClose, onToast }: { onClose: () => void; onToast: (m: string) => void }) {
+    const [roles, setRoles] = useState<import("@/api/admin").AdminRole[] | null>(null);
+    const [err, setErr] = useState("");
+    const [name, setName] = useState("");
+    const [perms, setPerms] = useState<Record<string, boolean>>({ dashboard: true });
+    const [busy, setBusy] = useState(false);
+    const load = () => adminApi.listRoles().then(setRoles).catch((e: Error) => setErr(e.message));
+    useEffect(() => { load(); }, []);
+    const create = async () => {
+      if (!name.trim()) { setErr("نام نقش الزامی است"); return; }
+      setBusy(true); setErr("");
+      try { await adminApi.createRole({ name: name.trim(), perms }); setName(""); setPerms({ dashboard: true }); load(); onToast("نقش ساخته شد"); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    const toggle = async (r: import("@/api/admin").AdminRole, key: string) => {
+      try { await adminApi.updateRole(r.id, { name: r.name, perms: { ...r.perms, [key]: !r.perms[key] } }); load(); }
+      catch (e) { onToast((e as Error).message); }
+    };
+    const remove = async (id: number) => {
+      try { await adminApi.deleteRole(id); load(); onToast("نقش حذف شد"); }
+      catch (e) { onToast((e as Error).message); }
+    };
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          <h3 className="font-black">نقش‌های مدیریتی</h3>
+          <p className="mt-1 text-xs text-muted">نقش بسازید و دسترسی‌ها را تیک بزنید. امنیت در سمت سرور هم اعمال می‌شود (403 واقعی).</p>
+          {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+          <div className="mt-4 space-y-2">
+            {roles === null ? <p className="text-xs text-muted">در حال بارگذاری…</p> : roles.length === 0 ? <p className="text-xs text-muted">نقشی ساخته نشده</p> : roles.map((r) => (
+              <div key={r.id} className="rounded-xl border border-white/10 p-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-black">{r.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-muted">{r.members} عضو</span>
+                    <button onClick={() => remove(r.id)} className="text-red-300"><Trash2 size={12} /></button>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {Object.keys(PERM_LABELS).map((k) => (
+                    <button key={k} onClick={() => toggle(r, k)} className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${r.perms[k] ? "bg-emerald-500/15 text-emerald-200" : "bg-white/10 text-muted"}`}>{PERM_LABELS[k]}</button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 rounded-xl border border-white/10 p-3">
+            <h4 className="text-xs font-black text-muted">نقش جدید</h4>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="نام نقش (مثلاً اپراتور)" className="mt-2 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {Object.keys(PERM_LABELS).map((k) => (
+                <button key={k} onClick={() => setPerms({ ...perms, [k]: !perms[k] })} className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${perms[k] ? "bg-emerald-500/15 text-emerald-200" : "bg-white/10 text-muted"}`}>{PERM_LABELS[k]}</button>
+              ))}
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button variant="ghost" onClick={onClose}>بستن</Button>
+              <Button onClick={create} disabled={busy}>ساخت نقش</Button>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

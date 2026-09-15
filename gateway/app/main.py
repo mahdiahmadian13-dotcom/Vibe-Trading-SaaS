@@ -925,13 +925,22 @@ async def _require_admin(user: User = Depends(require_auth)) -> User:
     return user
 
 
+# US12 role-based guards (FR-024): is_admin bypasses everything; otherwise
+# the user must hold the named permission via admin_roles. Wire once here —
+# every endpoint below just swaps the dependency, no per-endpoint logic.
+_can_dashboard = roles_mod.require_perm("dashboard", require_auth, get_db)
+_can_servers = roles_mod.require_perm("servers", require_auth, get_db)
+_can_users = roles_mod.require_perm("users", require_auth, get_db)
+_can_updates = roles_mod.require_perm("updates", require_auth, get_db)
+
+
 # ============================================================================
 # Admin — Overview / Monitoring
 # ============================================================================
 
 @app.get("/api/v1/admin/overview")
 async def admin_overview(
-    admin: User = Depends(_require_admin),
+    admin: User = Depends(_can_dashboard),
     db: AsyncSession = Depends(get_db),
 ):
     """Single-call dashboard payload: KPIs + engine/worker health + recent logins."""
@@ -962,7 +971,7 @@ async def admin_overview(
 
 @app.get("/api/v1/admin/monitor/summary")
 async def admin_monitor_summary(
-    admin: User = Depends(_require_admin),
+    admin: User = Depends(_can_dashboard),
     db: AsyncSession = Depends(get_db),
 ):
     today0 = _utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -993,7 +1002,7 @@ async def admin_monitor_summary(
 
 @app.get("/api/v1/admin/monitor/full")
 async def admin_monitor_full(
-    admin: User = Depends(_require_admin),
+    admin: User = Depends(_can_dashboard),
     db: AsyncSession = Depends(get_db),
 ):
     """Rich monitoring: per-server / per-worker task stats + live queue + resources."""
@@ -1172,7 +1181,7 @@ async def admin_monitor_full(
 
 
 @app.get("/api/v1/admin/fleet/metrics/live")
-async def admin_fleet_live(admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_fleet_live(admin: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     """US10 T028: live snapshot for 5s dashboard polling (cheap: Redis + light DB).
 
     Returns fleet totals + per-server load/queue/workers + live running tasks.
@@ -1235,7 +1244,7 @@ async def admin_fleet_live(admin: User = Depends(_require_admin), db: AsyncSessi
 @app.get("/api/v1/admin/fleet/metrics/history")
 async def admin_fleet_history(server_id: int, metric: str = "load",
                               hours: int = 72,
-                              admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+                              admin: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     """US10 T028: downsampled history (≤ ~500 points) for charts + mobile."""
     from datetime import timedelta as _td
     from app import metrics as metrics_mod
@@ -1274,7 +1283,7 @@ async def admin_list_users(
     q: str | None = Query(None, description="search username/phone"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    admin: User = Depends(_require_admin),
+    admin: User = Depends(_can_users),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
@@ -1304,7 +1313,7 @@ async def admin_list_users(
 
 
 @app.post("/api/v1/admin/users")
-async def admin_create_user(req: AdminUserCreate, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_create_user(req: AdminUserCreate, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
     if (await db.execute(select(User).where(User.username == req.username))).scalar_one_or_none():
         raise HTTPException(400, "نام کاربری تکراری است")
     u = User(username=req.username, hashed_password=hash_password(req.password), phone=req.phone, is_admin=req.is_admin, is_active=req.is_active)
@@ -1320,7 +1329,7 @@ async def admin_create_user(req: AdminUserCreate, admin: User = Depends(_require
 
 
 @app.get("/api/v1/admin/users/{user_id}")
-async def admin_get_user(user_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_get_user(user_id: int, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
     u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not u:
         raise HTTPException(404, "کاربر یافت نشد")
@@ -1338,7 +1347,7 @@ async def admin_get_user(user_id: int, admin: User = Depends(_require_admin), db
 
 
 @app.put("/api/v1/admin/users/{user_id}")
-async def admin_update_user(user_id: int, req: AdminUserUpdate, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_update_user(user_id: int, req: AdminUserUpdate, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
     u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not u:
         raise HTTPException(404, "کاربر یافت نشد")
@@ -1359,7 +1368,7 @@ async def admin_update_user(user_id: int, req: AdminUserUpdate, admin: User = De
 
 
 @app.delete("/api/v1/admin/users/{user_id}")
-async def admin_delete_user(user_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_delete_user(user_id: int, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
     if user_id == admin.id:
         raise HTTPException(400, "نمی‌توانید خودتان را حذف کنید")
     u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
@@ -1379,7 +1388,7 @@ async def admin_delete_user(user_id: int, admin: User = Depends(_require_admin),
 
 
 @app.post("/api/v1/admin/users/{user_id}/reset-password")
-async def admin_reset_password(user_id: int, req: AdminPasswordReset, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_reset_password(user_id: int, req: AdminPasswordReset, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
     u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not u:
         raise HTTPException(404, "کاربر یافت نشد")
@@ -1395,7 +1404,7 @@ async def admin_login_logs(
     user_id: int | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    admin: User = Depends(_require_admin),
+    admin: User = Depends(_can_dashboard),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(LoginLog).order_by(LoginLog.created_at.desc()).limit(limit).offset(offset)
@@ -1407,7 +1416,7 @@ async def admin_login_logs(
 
 @app.get("/api/v1/admin/tasks")
 async def admin_list_tasks(
-    admin: User = Depends(_require_admin),
+    admin: User = Depends(_can_dashboard),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Task).order_by(Task.created_at.desc()).limit(100))
@@ -1418,8 +1427,101 @@ class TaskRefundIn(BaseModel):
     reason: str = "platform-fault"  # admin note (logged in coupon.action)
 
 
+class AdminRoleIn(BaseModel):
+    name: str
+    perms: dict = {}  # {dashboard, servers, users, secrets, updates} bool
+
+
+@app.get("/api/v1/admin/roles")
+async def admin_list_roles(admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
+    """US12 T045: list definable roles + member counts."""
+    from shared.models import AdminRole as _Role, AdminRoleLink as _Link
+    roles = (await db.execute(select(_Role).order_by(_Role.id))).scalars().all()
+    out = []
+    for r in roles:
+        n = (await db.execute(select(func.count()).select_from(_Link).where(_Link.role_id == r.id))).scalar() or 0
+        out.append({"id": r.id, "name": r.name, "perms": r.perms or {}, "members": n})
+    return out
+
+
+@app.post("/api/v1/admin/roles")
+async def admin_create_role(req: AdminRoleIn, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
+    """US12 T045: create a role with permission flags."""
+    from shared.models import AdminRole as _Role
+    if not req.name.strip():
+        raise HTTPException(400, "نام نقش الزامی است")
+    if (await db.execute(select(_Role).where(_Role.name == req.name.strip()))).scalar_one_or_none():
+        raise HTTPException(400, "نام نقش تکراری است")
+    clean = {k: bool(v) for k, v in (req.perms or {}).items() if k in roles_mod.VALID_PERMS}
+    r = _Role(name=req.name.strip(), perms=clean)
+    db.add(r)
+    await db.commit()
+    await db.refresh(r)
+    return {"id": r.id, "name": r.name, "perms": r.perms}
+
+
+@app.patch("/api/v1/admin/roles/{role_id}")
+async def admin_update_role(role_id: int, req: AdminRoleIn, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
+    """US12 T045: rename / re-flag a role."""
+    from shared.models import AdminRole as _Role
+    r = (await db.execute(select(_Role).where(_Role.id == role_id))).scalar_one_or_none()
+    if not r:
+        raise HTTPException(404, "نقش یافت نشد")
+    if req.name.strip() and req.name.strip() != r.name:
+        if (await db.execute(select(_Role).where(_Role.name == req.name.strip()))).scalar_one_or_none():
+            raise HTTPException(400, "نام نقش تکراری است")
+        r.name = req.name.strip()
+    r.perms = {k: bool(v) for k, v in (req.perms or {}).items() if k in roles_mod.VALID_PERMS}
+    await db.commit()
+    return {"ok": True, "id": r.id, "name": r.name, "perms": r.perms}
+
+
+@app.delete("/api/v1/admin/roles/{role_id}")
+async def admin_delete_role(role_id: int, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
+    """US12 T045: delete a role (links cascade)."""
+    from shared.models import AdminRole as _Role, AdminRoleLink as _Link
+    from sqlalchemy import delete as _delete
+    r = (await db.execute(select(_Role).where(_Role.id == role_id))).scalar_one_or_none()
+    if not r:
+        raise HTTPException(404, "نقش یافت نشد")
+    await db.execute(_delete(_Link).where(_Link.role_id == role_id))
+    await db.delete(r)
+    await db.commit()
+    return {"ok": True}
+
+
+class RoleAssignIn(BaseModel):
+    user_id: int
+    role_id: int
+
+
+@app.post("/api/v1/admin/roles/assign")
+async def admin_assign_role(req: RoleAssignIn, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
+    """US12 T045: give a user a role (idempotent)."""
+    from shared.models import AdminRole as _Role, AdminRoleLink as _Link
+    if not (await db.execute(select(_Role).where(_Role.id == req.role_id))).scalar_one_or_none():
+        raise HTTPException(404, "نقش یافت نشد")
+    if not (await db.execute(select(User).where(User.id == req.user_id))).scalar_one_or_none():
+        raise HTTPException(404, "کاربر یافت نشد")
+    exists = (await db.execute(select(_Link).where(_Link.user_id == req.user_id, _Link.role_id == req.role_id))).scalar_one_or_none()
+    if not exists:
+        db.add(_Link(user_id=req.user_id, role_id=req.role_id))
+        await db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/v1/admin/roles/assign")
+async def admin_unassign_role(req: RoleAssignIn, admin: User = Depends(_can_users), db: AsyncSession = Depends(get_db)):
+    """US12 T045: take a role back."""
+    from shared.models import AdminRoleLink as _Link
+    from sqlalchemy import delete as _delete
+    await db.execute(_delete(_Link).where(_Link.user_id == req.user_id, _Link.role_id == req.role_id))
+    await db.commit()
+    return {"ok": True}
+
+
 @app.post("/api/v1/admin/tasks/{task_id}/refund")
-async def admin_refund_task(task_id: str, req: TaskRefundIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_refund_task(task_id: str, req: TaskRefundIn, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """FR-014b: refund the coupon consumed by a platform-faulted task.
 
     Only tasks in FAILED status with a recorded _coupon_id qualify, and only
@@ -1772,7 +1874,7 @@ class ServerProvisionIn(BaseModel):
 
 
 @app.post("/api/v1/admin/fleet/servers")
-async def admin_provision_server(req: ServerProvisionIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_provision_server(req: ServerProvisionIn, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """Register a server + auto-provision a FULL node over SSH (US-09, FR-020/021).
 
     The SSH secret is encrypted before storage and never logged. The install
@@ -1822,7 +1924,7 @@ async def admin_provision_server(req: ServerProvisionIn, admin: User = Depends(_
 
 
 @app.get("/api/v1/admin/fleet/servers/{server_id}/provision")
-async def admin_provision_status(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_provision_status(server_id: int, admin: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     """Live provision progress for the panel (poll every ~3s during install)."""
     from shared.models import ProvisionJob as _ProvisionJob
     job = (await db.execute(
@@ -1835,7 +1937,7 @@ async def admin_provision_status(server_id: int, admin: User = Depends(_require_
 
 
 @app.post("/api/v1/admin/fleet/servers/{server_id}/provision/retry")
-async def admin_provision_retry(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_provision_retry(server_id: int, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """Retry a failed provision from the failed step (successful steps are skipped)."""
     from shared.models import ProvisionJob as _ProvisionJob
     job = (await db.execute(
@@ -1861,7 +1963,7 @@ async def admin_provision_retry(server_id: int, admin: User = Depends(_require_a
 
 
 @app.get("/api/v1/admin/servers")
-async def admin_list_servers(admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_list_servers(admin: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(ServerNode).order_by(ServerNode.id))).scalars().all()
     out = []
     for s in rows:
@@ -1905,7 +2007,7 @@ class ServerManageIn(BaseModel):
 
 
 @app.patch("/api/v1/admin/servers/{server_id}")
-async def admin_manage_server(server_id: int, req: ServerManageIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_manage_server(server_id: int, req: ServerManageIn, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """US3: caps + autoscale + drain from the panel, no SSH needed."""
     s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
     if not s:
@@ -1929,7 +2031,7 @@ async def admin_manage_server(server_id: int, req: ServerManageIn, admin: User =
 
 
 @app.get("/api/v1/admin/servers/{server_id}")
-async def admin_server_detail(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_server_detail(server_id: int, admin: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     """US3: full detail — capability bench, provision log, workers, engine."""
     from shared.models import ProvisionJob as _ProvisionJob
     s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
@@ -1961,7 +2063,7 @@ async def admin_server_detail(server_id: int, admin: User = Depends(_require_adm
 
 
 @app.post("/api/v1/admin/servers/{server_id}/token/rotate")
-async def admin_rotate_join_token(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_rotate_join_token(server_id: int, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """FR-011: revoke + regenerate a server's join token (old token dies immediately)."""
     s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
     if not s:
@@ -1972,7 +2074,7 @@ async def admin_rotate_join_token(server_id: int, admin: User = Depends(_require
 
 
 @app.post("/api/v1/admin/servers")
-async def admin_create_server(req: ServerNodeIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_create_server(req: ServerNodeIn, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     if (await db.execute(select(ServerNode).where(ServerNode.name == req.name))).scalar_one_or_none():
         raise HTTPException(400, "نام سرور تکراری است")
     s = ServerNode(
@@ -1989,7 +2091,7 @@ async def admin_create_server(req: ServerNodeIn, admin: User = Depends(_require_
 
 
 @app.delete("/api/v1/admin/servers/{server_id}")
-async def admin_delete_server(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_delete_server(server_id: int, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
     if not s:
         raise HTTPException(404, "سرور یافت نشد")
@@ -2009,7 +2111,7 @@ class ServerScale(BaseModel):
 
 
 @app.post("/api/v1/admin/servers/{server_id}/scale")
-async def admin_scale_server(server_id: int, req: ServerScale, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_scale_server(server_id: int, req: ServerScale, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """Set desired worker count / per-worker limits — the node agent applies it within ~10s."""
     s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
     if not s:
@@ -2276,7 +2378,7 @@ async def updater_report(body: dict, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/api/v1/admin/fleet/update")
-async def admin_fleet_update_trigger(req: FleetUpdateTrigger, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_fleet_update_trigger(req: FleetUpdateTrigger, admin: User = Depends(_can_updates), db: AsyncSession = Depends(get_db)):
     """One-click: update engine core to latest upstream + roll out to workers."""
     active = (await db.execute(
         select(FleetUpdate).where(FleetUpdate.status.in_(["pending", "running"]))
@@ -2295,7 +2397,7 @@ async def admin_fleet_update_trigger(req: FleetUpdateTrigger, admin: User = Depe
 
 
 @app.get("/api/v1/admin/fleet/update/status")
-async def admin_fleet_update_status(admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+async def admin_fleet_update_status(admin: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     """Current/last update job + engine version info + server convergence."""
     job = (await db.execute(
         select(FleetUpdate).order_by(FleetUpdate.id.desc()).limit(1)
@@ -2337,9 +2439,7 @@ class EngineNodeIn(BaseModel):
 
 
 @app.get("/api/v1/admin/fleet")
-async def admin_fleet(user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
-    if not user.is_admin:
-        raise HTTPException(403, "فقط ادمین")
+async def admin_fleet(user: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     nodes = (await db.execute(select(EngineNode).order_by(EngineNode.id))).scalars().all()
     return [
         {
@@ -2354,10 +2454,8 @@ async def admin_fleet(user: User = Depends(require_auth), db: AsyncSession = Dep
 
 
 @app.post("/api/v1/admin/fleet")
-async def admin_fleet_add(req: EngineNodeIn, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+async def admin_fleet_add(req: EngineNodeIn, user: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """Add a new engine server (any host:port running Vibe-Trading)."""
-    if not user.is_admin:
-        raise HTTPException(403, "فقط ادمین")
     exists = (await db.execute(select(EngineNode).where(EngineNode.name == req.name))).scalar_one_or_none()
     if exists:
         raise HTTPException(400, "نام تکراری است")
@@ -2386,9 +2484,7 @@ async def admin_fleet_add(req: EngineNodeIn, user: User = Depends(require_auth),
 
 
 @app.put("/api/v1/admin/fleet/{node_id}")
-async def admin_fleet_update(node_id: int, req: EngineNodeIn, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
-    if not user.is_admin:
-        raise HTTPException(403, "فقط ادمین")
+async def admin_fleet_update(node_id: int, req: EngineNodeIn, user: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     node = (await db.execute(select(EngineNode).where(EngineNode.id == node_id))).scalar_one_or_none()
     if not node:
         raise HTTPException(404, "گره یافت نشد")
@@ -2404,9 +2500,7 @@ async def admin_fleet_update(node_id: int, req: EngineNodeIn, user: User = Depen
 
 
 @app.delete("/api/v1/admin/fleet/{node_id}")
-async def admin_fleet_delete(node_id: int, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
-    if not user.is_admin:
-        raise HTTPException(403, "فقط ادمین")
+async def admin_fleet_delete(node_id: int, user: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     node = (await db.execute(select(EngineNode).where(EngineNode.id == node_id))).scalar_one_or_none()
     if not node:
         raise HTTPException(404, "گره یافت نشد")
@@ -2416,10 +2510,8 @@ async def admin_fleet_delete(node_id: int, user: User = Depends(require_auth), d
 
 
 @app.post("/api/v1/admin/fleet/{node_id}/health")
-async def admin_fleet_recheck(node_id: int, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
+async def admin_fleet_recheck(node_id: int, user: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     """Force an immediate health probe of one node."""
-    if not user.is_admin:
-        raise HTTPException(403, "فقط ادمین")
     node = (await db.execute(select(EngineNode).where(EngineNode.id == node_id))).scalar_one_or_none()
     if not node:
         raise HTTPException(404, "گره یافت نشد")

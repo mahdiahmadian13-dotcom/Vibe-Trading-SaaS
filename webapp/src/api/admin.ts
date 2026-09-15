@@ -128,6 +128,22 @@ export const getFleetHistory = (serverId: number, metric = "load", hours = 72) =
   api<{ server_id: number; metric: string; hours: number; points: Array<[string, number]> }>(
     `/api/v1/admin/fleet/metrics/history?server_id=${serverId}&metric=${metric}&hours=${hours}`);
 
+// ---------------------------------------------------------------------------
+// Admin roles (US12, FR-024)
+// ---------------------------------------------------------------------------
+
+export type AdminRole = { id: number; name: string; perms: Record<string, boolean>; members: number };
+
+export const listRoles = () => api<AdminRole[]>("/api/v1/admin/roles");
+export const createRole = (body: { name: string; perms: Record<string, boolean> }) =>
+  api<AdminRole>("/api/v1/admin/roles", { method: "POST", body: JSON.stringify(body) });
+export const updateRole = (id: number, body: { name: string; perms: Record<string, boolean> }) =>
+  api<{ ok: boolean }>(`/api/v1/admin/roles/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+export const deleteRole = (id: number) =>
+  api<{ ok: boolean }>(`/api/v1/admin/roles/${id}`, { method: "DELETE" });
+export const assignRole = (user_id: number, role_id: number) =>
+  api<{ ok: boolean }>("/api/v1/admin/roles/assign", { method: "POST", body: JSON.stringify({ user_id, role_id }) });
+
 
 // ---------------------------------------------------------------------------
 // Fleet update (one-click engine core update + worker rollout)
