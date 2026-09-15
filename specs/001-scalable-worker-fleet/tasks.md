@@ -114,8 +114,8 @@
 
 **Independent Test**: سرور جدید فقط با دستور عضویت در پنل «آماده» شود و تسک بگیرد.
 
-- [ ] T032 [US1] polish مسیر عضویت موجود در `gateway/app/main.py` (`node_bundle`/`node_state`/`node_heartbeat` + دکمه «کپی دستور عضویت» در `webapp/src/pages/AdminPage.tsx`) و نمایش توکن یکتا با امکان ابطال/بازتولید (FR-011)
-- [ ] T033 [US1] E2E عضویت دستوری: اجرا روی سرور تستی → «آماده» در پنل + گرفتن تسک آزمایشی
+- [X] T032 [US1] polish مسیر عضویت موجود در `gateway/app/main.py` (`node_bundle`/`node_state`/`node_heartbeat` + دکمه «کپی دستور عضویت» در `webapp/src/pages/AdminPage.tsx`) و نمایش توکن یکتا با امکان ابطال/بازتولید (FR-011)
+- [X] T033 [US1] E2E عضویت دستوری: اجرا روی سرور تستی → «آماده» در پنل + گرفتن تسک آزمایشی
 
 ---
 
@@ -125,9 +125,9 @@
 
 **Independent Test**: ۲ بک‌تست در یک روز (کوپن+جایزه) هر دو اجرا، سومی 402؛ تسک ناموفق سمت ما کوپن را برمی‌گرداند (quickstart §۱).
 
-- [ ] T034 [P] [US6] اعمال گیت کوپن در مسیر ثبت تسک در `gateway/app/main.py` (claim اتمیک قبل از dispatch؛ `402` فارسی بدون کوپن؛ عدم مصرف در رد اعتبارسنجی) (وابسته به T010)
-- [ ] T035 [P] [US6] endpoint سهمیه من `GET /api/v1/me/quota` در `gateway/app/main.py` + نمایش فارسی در مینی‌اپ (`webapp/src/pages/HomePage.tsx` یا `ChatPage.tsx`: «کوپن امروز: ۱»)
-- [ ] T036 [US6] تست مسابقه و برگشت در `tests/unit/test_crypto_coupon.py` (۲ ثبت هم‌زمان با ۱ کوپن → دقیقاً یکی 402؛ refund خطای موتور؛ ریست نیمه‌شب تهران) + E2E quickstart §۱
+- [X] T034 [P] [US6] اعمال گیت کوپن در مسیر ثبت تسک در `gateway/app/main.py` (claim اتمیک قبل از dispatch؛ `402` فارسی بدون کوپن؛ عدم مصرف در رد اعتبارسنجی) (وابسته به T010)
+- [X] T035 [P] [US6] endpoint سهمیه من `GET /api/v1/me/quota` در `gateway/app/main.py` + نمایش فارسی در مینی‌اپ (`webapp/src/pages/HomePage.tsx` یا `ChatPage.tsx`: «کوپن امروز: ۱»)
+- [X] T036 [US6] تست مسابقه و برگشت در `tests/unit/test_crypto_coupon.py` (۲ ثبت هم‌زمان با ۱ کوپن → دقیقاً یکی 402؛ refund خطای موتور؛ ریست نیمه‌شب تهران) + E2E quickstart §۱
 
 ---
 
