@@ -99,10 +99,10 @@
 
 **Independent Test**: با ۱۰ تسک فعال نمودارها زنده حرکت کنند، اعداد با واقعیت بخوانند، روی موبایل به‌هم‌ریخته نباشد (quickstart §۴).
 
-- [ ] T028 [P] [US10] endpointهای متریک در `gateway/app/main.py` (`GET /api/v1/admin/fleet/metrics/live` نمونه زنده، `GET /api/v1/admin/fleet/metrics/history` با downsample ≤۵۰۰ نقطه، `GET /api/v1/admin/fleet/tasks-live`) با نقش `dashboard`
-- [ ] T029 [P] [US10] ویجت‌های داشبورد در `webapp/src/components/fleet/` (کارت‌های عددی فارسی `FleetCards.tsx` + نمودار خطی `LoadChart.tsx` با `isAnimationActive={false}` و رینگ‌بافر + میله‌ای `TasksBar.tsx` + دایره‌ای `DistDonut.tsx` + نقشه سلامت SVG دستی `HealthMap.tsx` + لیست زنده `LiveTasks.tsx`)
-- [ ] T030 [US10] صفحه داشبورد در `webapp/src/pages/AdminPage.tsx` (poll هر ۵ ثانیه + تب تاریخچه چندروزه + `Intl.NumberFormat('fa-IR')` + سازگاری موبایل) (وابسته به T028، T029)
-- [ ] T031 [US10] E2E داشبورد طبق quickstart §۴ (مدرک browser_console: حرکت زنده + قرمز شدن گره مرده + اسکرین‌شات موبایل)
+- [X] T028 [P] [US10] endpointهای متریک در `gateway/app/main.py` (`GET /api/v1/admin/fleet/metrics/live` نمونه زنده، `GET /api/v1/admin/fleet/metrics/history` با downsample ≤۵۰۰ نقطه، `GET /api/v1/admin/fleet/tasks-live`) با نقش `dashboard`
+- [X] T029 [P] [US10] ویجت‌های داشبورد در `webapp/src/components/fleet/` (کارت‌های عددی فارسی `FleetCards.tsx` + نمودار خطی `LoadChart.tsx` با `isAnimationActive={false}` و رینگ‌بافر + میله‌ای `TasksBar.tsx` + دایره‌ای `DistDonut.tsx` + نقشه سلامت SVG دستی `HealthMap.tsx` + لیست زنده `LiveTasks.tsx`)
+- [X] T030 [US10] صفحه داشبورد در `webapp/src/pages/AdminPage.tsx` (poll هر ۵ ثانیه + تب تاریخچه چندروزه + `Intl.NumberFormat('fa-IR')` + سازگاری موبایل) (وابسته به T028، T029)
+- [X] T031 [US10] E2E داشبورد طبق quickstart §۴ (مدرک browser_console: حرکت زنده + قرمز شدن گره مرده + اسکرین‌شات موبایل)
 
 **Checkpoint**: ویترین تجاری محصول — مدیری که این را ببیند اعتماد می‌کند.
 
