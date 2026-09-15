@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import time
@@ -34,6 +35,9 @@ from sqlalchemy import update as _sa_update
 
 from app import coupons as coupons_mod
 from app.fleet import EnginePool, get_engine_pool, start_background_loops, stop_background_loops
+import app.crypto as crypto_mod
+import app.provision as provision_mod
+from app import roles as roles_mod
 from shared.security import (
     create_access_token, hash_password, verify_password,
     require_auth, get_current_user
@@ -1635,6 +1639,109 @@ class ServerNodeIn(BaseModel):
     worker_concurrency: int = 4
     cpu_limit: str = "2.0"
     mem_limit: str = "2G"
+
+
+class ServerProvisionIn(BaseModel):
+    """Register a server + auto-provision it over SSH (US-09, FR-020)."""
+    name: str
+    ssh_host: str
+    ssh_user: str = "root"
+    auth_type: str = "password"  # password | key
+    ssh_password: str | None = None
+    ssh_key: str | None = None
+    tailscale_ip: str | None = None
+    region: str | None = None
+    min_workers: int = 1
+    max_workers: int = 8
+
+
+@app.post("/api/v1/admin/fleet/servers")
+async def admin_provision_server(req: ServerProvisionIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """Register a server + auto-provision a FULL node over SSH (US-09, FR-020/021).
+
+    The SSH secret is encrypted before storage and never logged. The install
+    runs as a background job; poll GET .../provision for live progress.
+    """
+    from shared.models import ProvisionJob as _ProvisionJob
+    if req.auth_type not in ("password", "key"):
+        raise HTTPException(400, "نوع احراز نامعتبر است")
+    secret_plain = req.ssh_password if req.auth_type == "password" else req.ssh_key
+    if not secret_plain:
+        raise HTTPException(400, "رمز عبور یا کلید خصوصی لازم است")
+    if (await db.execute(select(ServerNode).where(ServerNode.name == req.name))).scalar_one_or_none():
+        raise HTTPException(400, "نام سرور تکراری است")
+    s = ServerNode(
+        name=req.name, region=req.region,
+        join_token=secrets.token_urlsafe(24),
+        desired_workers=req.min_workers,
+        min_workers=req.min_workers, max_workers=req.max_workers,
+        ssh_host=req.ssh_host, ssh_user=req.ssh_user,
+        ssh_auth_type=req.auth_type, tailscale_ip=req.tailscale_ip,
+        provision_state="running", provision_step="connect",
+        status="pending",
+    )
+    db.add(s)
+    await db.flush()  # need s.id for per-server key derivation
+    try:
+        ct, kid = crypto_mod.encrypt_secret(secret_plain, s.id)
+    except RuntimeError:
+        await db.rollback()
+        raise HTTPException(500, "کلید رمزنگاری سرور تنظیم نشده (FLEET_MASTER_KEY)")
+    finally:
+        secret_plain = ""
+    s.ssh_secret = ct
+    s.ssh_key_id = kid
+    job = _ProvisionJob(server_id=s.id, status="running", current_step="connect", steps=[], triggered_by=admin.id)
+    db.add(job)
+    await db.commit()
+    await db.refresh(s)
+    await db.refresh(job)
+
+    def _bundle_url(server: ServerNode) -> str:
+        base = (get_settings().PUBLIC_BASE_URL or str(request_url_base())).rstrip("/")
+        return f"{base}/api/v1/node/{server.join_token}/bundle"
+
+    asyncio.create_task(provision_mod.run_provision_job(job.id, _bundle_url))
+    return {"id": s.id, "provision_job_id": job.id, "status": "running", "current_step": "connect"}
+
+
+@app.get("/api/v1/admin/fleet/servers/{server_id}/provision")
+async def admin_provision_status(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """Live provision progress for the panel (poll every ~3s during install)."""
+    from shared.models import ProvisionJob as _ProvisionJob
+    job = (await db.execute(
+        select(_ProvisionJob).where(_ProvisionJob.server_id == server_id).order_by(_ProvisionJob.id.desc())
+    )).scalars().first()
+    if not job:
+        raise HTTPException(404, "کاری برای این سرور ثبت نشده")
+    return {"status": job.status, "current_step": job.current_step, "steps": job.steps or [],
+            "job_id": job.id}
+
+
+@app.post("/api/v1/admin/fleet/servers/{server_id}/provision/retry")
+async def admin_provision_retry(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """Retry a failed provision from the failed step (successful steps are skipped)."""
+    from shared.models import ProvisionJob as _ProvisionJob
+    job = (await db.execute(
+        select(_ProvisionJob).where(_ProvisionJob.server_id == server_id).order_by(_ProvisionJob.id.desc())
+    )).scalars().first()
+    if not job:
+        raise HTTPException(404, "کاری برای این سرور ثبت نشده")
+    if job.status == "running":
+        raise HTTPException(409, "نصب در حال اجراست")
+    if job.status == "ready":
+        return {"ok": True, "status": "ready"}
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
+    if not s or not s.ssh_secret:
+        raise HTTPException(400, "مشخصات اتصال این سرور موجود نیست")
+    await provision_mod.retry_provision_job(job, db)
+
+    def _bundle_url(server: ServerNode) -> str:
+        base = (get_settings().PUBLIC_BASE_URL or str(request_url_base())).rstrip("/")
+        return f"{base}/api/v1/node/{server.join_token}/bundle"
+
+    asyncio.create_task(provision_mod.run_provision_job(job.id, _bundle_url))
+    return {"ok": True, "status": "running", "current_step": job.current_step}
 
 
 @app.get("/api/v1/admin/servers")
