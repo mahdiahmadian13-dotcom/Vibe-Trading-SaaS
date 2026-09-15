@@ -67,10 +67,14 @@ Runs:
 - FastAPI Gateway
 - Telegram Bot
 
-### 2. Worker Servers (horizontal scaling)
-Each runs:
-- ARQ Worker (connects to central Redis)
-- Optionally: Vibe-Trading Engine (local Docker)
+### 2. Full-Node Servers (horizontal scaling, v2.0)
+Each runs (auto-installed from the panel over SSH, or manual join):
+- ARQ Worker(s) (per-worker dedicated queues `arq:q:<name>` fed by the dispatcher)
+- Local Vibe-Trading Engine (per-node routing via `node-<name>` mirror rows)
+- Node agent (30s heartbeat → `POST /api/v1/node/{token}/heartbeat`,
+  reconciles `desired_workers` locally, reports capability bench)
+- Seen by the gateway as one `server_nodes` row: caps, autoscale, watchdog
+  state, provision log, encrypted SSH credential.
 
 ### 3. Engine Server (can be same as Central)
 Runs:

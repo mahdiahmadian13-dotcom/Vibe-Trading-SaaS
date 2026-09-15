@@ -226,38 +226,59 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-## 🖥️ Multi-Server Fleet (v1.8)
+## 🖥️ Multi-Server Fleet (v2.0 — scalable worker fleet)
 
-**Architecture:** Gateway → ARQ queue (Redis) → N Workers (any server) → Engine Fleet (any server)
+**Architecture:** Gateway → dispatcher (per-worker ARQ queues, Redis) → N full-node servers (worker + local engine + agent each) → results mirrored to center.
 
-### Add an Engine (new AI-core server)
-```bash
-# 1. Run Vibe-Trading engine on the new server (port 8899)
-# 2. Register it in the gateway:
-curl -X POST http://GATEWAY:9001/api/v1/admin/fleet \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"engine-2","url":"http://NEW_SERVER:8899","max_concurrency":8}'
-# Health probe runs automatically (FLEET_HEALTH_INTERVAL=30s, failover after 2 failures)
-```
+### Add a server (auto-install from the panel, recommended)
+Admin panel → Nodes tab → «افزودن سرور»: enter SSH host/user + password or key.
+The gateway installs everything over SSH (docker → private net → engine →
+workers → agent → capability bench) with live per-step progress + retry.
+SSH secrets are stored Fernet-encrypted (`FLEET_MASTER_KEY` in `.env`).
 
-### Add a Worker (new processing server)
-```bash
-# On the NEW server:
-git clone https://github.com/mahdiahmadian13-dotcom/Vibe-Trading-SaaS.git
-cd Vibe-Trading-SaaS
-BROKER_URL=redis://CENTRAL_IP:6379 \
-ENGINE_URL=http://CENTRAL_IP:8899 \
-ENGINE_API_KEY=$VIBE_ENGINE_API_KEY \
-DATABASE_URL=postgresql+asyncpg://vt:PASS@CENTRAL_IP:5432/vibetrader \
-WORKER_NAME=worker-eu-1 \
-docker compose -f docker-compose.worker.yml up -d --build
-# Heartbeat every 30s → appears in GET /api/v1/admin/workers
-```
+### Add a server (manual join, alternative path)
+On the NEW server: install the node agent, then it heartbeats every 30s
+(`POST /api/v1/node/{join_token}/heartbeat`) and reconciles
+`desired_workers` locally.
 
-### Admin API
+### Private networking (required for remote nodes)
+Remote nodes reach the center ONLY over Tailscale/VPN. On center + nodes
+(join the same tailnet), then set the `*_PUBLIC` URLs to the center's
+Tailscale IP (100.x.y.z). Never expose 6379/5432/8899 publicly —
+`PUBLISH_REDIS/PUBLISH_PG` stay `127.0.0.1`.
+
+### Worker caps + autoscale
+Each server has `min/max_workers` + `autoscale_enabled` (panel → server
+detail). The autoscaler (60s loop) sets `desired = ceil(pending/6)` inside
+`[min,max]` with hysteresis + 5-min cooldown; manual panel edits always win.
+
+### Watchdog + Telegram alerts
+Silent servers flip `online → degraded (60s) → offline (120s)` with
+auto-drain (queued tasks move to fallback, nothing lost) and Telegram
+alerts to `FLEET_ALERT_TG_IDS`. Recovery flips back to `online`.
+
+### Coupon quotas (free tier)
+1 backtest/day (Tehran midnight, no accumulation) + 1 swarm/week (Monday).
+Paid plans unlimited (for now). Referral = +2 permanent credit after daily
+coupon. Platform-faulted tasks refundable from the panel.
+
+### Staged rollout updates
+Admin panel → «بروزرسانی همه ورکرها»: engine core updates, then nodes roll
+out one-by-one (drain → bump epoch → health → back) with cancel + per-node
+progress. Failed node rolls back, rest wait for admin decision.
+
+### Admin API (fleet subset)
 | Endpoint | Purpose |
 |---|---|
+| `POST /api/v1/admin/fleet/servers` | Register + auto-install a server |
+| `GET /api/v1/admin/servers` | List incl. live worker loads + capability |
+| `PATCH /api/v1/admin/servers/{id}` | Caps / autoscale / drain |
+| `POST /api/v1/admin/servers/{id}/token/rotate` | Revoke + regenerate join token |
+| `GET /api/v1/admin/fleet/metrics/live` | 5s dashboard snapshot |
+| `GET /api/v1/admin/fleet/metrics/history` | Downsampled history (≤500 pts) |
+| `GET/POST/PATCH/DELETE /api/v1/admin/roles` | Definable admin roles + perms |
+| `POST /api/v1/admin/tasks/{id}/refund` | Refund platform-faulted coupon |
+| `DELETE /api/v1/admin/fleet/update/{id}` | Cancel a running rollout |
 | `GET/POST/PUT/DELETE /api/v1/admin/fleet` | Engine nodes CRUD + live health |
 | `POST /api/v1/admin/fleet/{id}/health` | Force health probe |
 | `GET /api/v1/admin/workers` | Live worker registry (DB mirror of Redis) |

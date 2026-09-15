@@ -218,10 +218,14 @@ async def lifespan(app: FastAPI):
     # US5+US7 T050: per-server autoscaler (60s loop, manual override wins)
     from app.autoscale import start_autoscale_loop, stop_autoscale_loop
     start_autoscale_loop()
+    # T051: 30-day retention janitor (daily)
+    from app.retention import start_retention_loop, stop_retention_loop
+    start_retention_loop()
     yield
     await stop_dispatcher()
     await stop_background_loops()
     await stop_autoscale_loop()
+    await stop_retention_loop()
 
 
 app = FastAPI(
