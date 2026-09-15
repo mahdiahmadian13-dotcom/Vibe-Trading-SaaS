@@ -75,6 +75,27 @@ export const deleteServer = (id: number) => api<{ ok: boolean }>(`/api/v1/admin/
 export const scaleServer = (id: number, body: { desired_workers: number; worker_concurrency?: number; cpu_limit?: string; mem_limit?: string }) =>
   api<{ ok: boolean; desired_workers: number }>(`/api/v1/admin/servers/${id}/scale`, { method: "POST", body: JSON.stringify(body) });
 
+// ---------------------------------------------------------------------------
+// Auto-provision (full node over SSH — US9, FR-020)
+// ---------------------------------------------------------------------------
+
+export type ProvisionStep = { step: string; ts: string; ok: boolean | null; msg_fa: string };
+
+export const provisionServer = (body: {
+  name: string; ssh_host: string; ssh_user?: string; auth_type: "password" | "key";
+  ssh_password?: string | null; ssh_key?: string | null; tailscale_ip?: string | null;
+  region?: string | null; min_workers?: number; max_workers?: number;
+}) => api<{ id: number; provision_job_id: number; status: string; current_step: string }>(
+  "/api/v1/admin/fleet/servers", { method: "POST", body: JSON.stringify(body) });
+
+export const getProvision = (serverId: number) =>
+  api<{ status: string; current_step: string | null; steps: ProvisionStep[]; job_id: number }>(
+    `/api/v1/admin/fleet/servers/${serverId}/provision`);
+
+export const retryProvision = (serverId: number) =>
+  api<{ ok: boolean; status: string; current_step: string | null }>(
+    `/api/v1/admin/fleet/servers/${serverId}/provision/retry`, { method: "POST" });
+
 
 // ---------------------------------------------------------------------------
 // Fleet update (one-click engine core update + worker rollout)

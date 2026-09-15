@@ -644,9 +644,136 @@ docker compose -f docker-compose.worker.yml up -d --build`;
         {editNode && <FleetModal node={editNode} onClose={() => setEditNode(null)} onDone={() => { setEditNode(null); load(); onToast("ذخیره شد"); }} />}
         {pendingDelete !== null && <Confirm title="حذف موتور" body="این موتور از fleet حذف شود؟ تسک‌های در حال اجرا قطع نمی‌شوند." onCancel={() => setPendingDelete(null)} onConfirm={async () => { try { await adminApi.deleteFleet(pendingDelete); onToast("حذف شد"); } catch (e) { onToast((e as Error).message); } setPendingDelete(null); load(); }} />}
 
-        {joinOpen && <JoinServerModal onClose={() => setJoinOpen(false)} onDone={() => { setJoinOpen(false); load(); }} />}
+        {joinOpen && <ProvisionModal onClose={() => setJoinOpen(false)} onDone={() => { setJoinOpen(false); load(); }} />}
         {joinShow && <JoinShowModal server={joinShow} onClose={() => setJoinShow(null)} onToast={onToast} />}
         {pendingServerDelete !== null && <Confirm title="حذف سرور" body="سرور از پنل حذف شود؟ ورکرهایش باید ابتدا به 0 تنظیم شوند." onCancel={() => setPendingServerDelete(null)} onConfirm={async () => { try { await adminApi.deleteServer(pendingServerDelete); onToast("حذف شد"); } catch (e) { onToast((e as Error).message); } setPendingServerDelete(null); load(); }} />}
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-provision modal (US-09, FR-020): IP + SSH credential → full node,
+  // live stepwise progress + retry-from-failed-step. Manual join flow lives
+  // in JoinServerModal below (kept for SSH-less servers).
+  // ---------------------------------------------------------------------------
+  function ProvisionModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+    const [f, setF] = useState({ name: "", ssh_host: "", ssh_user: "root", auth_type: "password" as "password" | "key", secret: "", tailscale_ip: "", region: "", min_workers: 1, max_workers: 4 });
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const [prov, setProv] = useState<{ serverId: number; status: string; current_step: string | null; steps: import("@/api/admin").ProvisionStep[] } | null>(null);
+
+    const poll = async (serverId: number) => {
+      try {
+        const p = await adminApi.getProvision(serverId);
+        setProv({ serverId, status: p.status, current_step: p.current_step, steps: p.steps });
+        return p.status;
+      } catch { return "unknown"; }
+    };
+
+    useEffect(() => {
+      if (!prov || prov.status !== "running") return;
+      const t = setInterval(async () => {
+        const st = await poll(prov.serverId);
+        if (st !== "running") clearInterval(t);
+      }, 3000);
+      return () => clearInterval(t);
+    }, [prov?.serverId, prov?.status]);
+
+    const submit = async () => {
+      if (!f.name.trim()) { setErr("نام سرور الزامی است (مثلاً srv-eu-1)"); return; }
+      if (!f.ssh_host.trim()) { setErr("IP یا هاست SSH الزامی است"); return; }
+      if (!f.secret) { setErr(f.auth_type === "password" ? "رمز عبور SSH الزامی است" : "متن کلید خصوصی الزامی است"); return; }
+      setBusy(true); setErr("");
+      try {
+        const r = await adminApi.provisionServer({
+          name: f.name.trim(), ssh_host: f.ssh_host.trim(), ssh_user: f.ssh_user.trim() || "root",
+          auth_type: f.auth_type,
+          ...(f.auth_type === "password" ? { ssh_password: f.secret } : { ssh_key: f.secret }),
+          tailscale_ip: f.tailscale_ip.trim() || null, region: f.region.trim() || null,
+          min_workers: f.min_workers, max_workers: f.max_workers,
+        });
+        setF({ ...f, secret: "" }); // never keep plaintext in state longer than needed
+        await poll(r.id);
+      } catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+
+    const retry = async () => {
+      if (!prov) return;
+      setBusy(true); setErr("");
+      try { await adminApi.retryProvision(prov.serverId); await poll(prov.serverId); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+
+    const STEP_LABELS: Record<string, string> = { connect: "اتصال SSH", docker: "داکر", net: "شبکه خصوصی", engine: "انجین", workers: "ورکرها", agent: "ایجنت", bench: "تست توان", done: "اتمام" };
+    const failed = prov?.status === "failed";
+    const ready = prov?.status === "ready";
+
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          {!prov ? (
+            <>
+              <h3 className="font-black">افزودن سرور جدید — نصب خودکار</h3>
+              <p className="mt-1 text-xs text-muted">IP و مشخصات SSH را بدهید؛ پنل خودش داکر، شبکه خصوصی، انجین، ورکرها و ایجنت را نصب می‌کند.</p>
+              {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+              <div className="mt-4 space-y-3">
+                <div className="flex gap-2">
+                  <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="نام سرور (srv-eu-1) *" className="flex-1 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+                  <input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} placeholder="region" className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+                </div>
+                <div className="flex gap-2">
+                  <input value={f.ssh_host} onChange={(e) => setF({ ...f, ssh_host: e.target.value })} placeholder="IP خصوصی / هاست SSH *" dir="ltr" className="flex-1 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-left outline-none" />
+                  <input value={f.ssh_user} onChange={(e) => setF({ ...f, ssh_user: e.target.value })} placeholder="کاربر" dir="ltr" className="w-28 rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-left outline-none" />
+                </div>
+                <div className="flex gap-2 text-xs">
+                  <label className={`flex-1 cursor-pointer rounded-xl border px-3 py-2.5 text-center ${f.auth_type === "password" ? "border-brand/60 bg-brand/10 font-bold" : "border-white/10 bg-white/[.04]"}`}><input type="radio" className="hidden" checked={f.auth_type === "password"} onChange={() => setF({ ...f, auth_type: "password" })} /> رمز عبور</label>
+                  <label className={`flex-1 cursor-pointer rounded-xl border px-3 py-2.5 text-center ${f.auth_type === "key" ? "border-brand/60 bg-brand/10 font-bold" : "border-white/10 bg-white/[.04]"}`}><input type="radio" className="hidden" checked={f.auth_type === "key"} onChange={() => setF({ ...f, auth_type: "key" })} /> کلید خصوصی</label>
+                </div>
+                {f.auth_type === "password"
+                  ? <input type="password" value={f.secret} onChange={(e) => setF({ ...f, secret: e.target.value })} placeholder="رمز عبور SSH *" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
+                  : <textarea value={f.secret} onChange={(e) => setF({ ...f, secret: e.target.value })} placeholder="-----BEGIN OPENSSH PRIVATE KEY----- ..." dir="ltr" rows={3} className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-left font-mono text-[11px] outline-none" />}
+                <input value={f.tailscale_ip} onChange={(e) => setF({ ...f, tailscale_ip: e.target.value })} placeholder="IP تیلسکیل مرکز (اختیاری)" dir="ltr" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-left outline-none" />
+                <div className="flex gap-2 text-xs">
+                  <label className="flex-1">کمینه ورکر<input inputMode="numeric" value={f.min_workers} onChange={(e) => setF({ ...f, min_workers: Math.max(0, parseNum(e.target.value)) })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                  <label className="flex-1">سقف ورکر<input inputMode="numeric" value={f.max_workers} onChange={(e) => setF({ ...f, max_workers: Math.max(1, parseNum(e.target.value)) })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                </div>
+                <p className="text-[11px] leading-5 text-muted">رمز/کلید فقط رمزنگاری‌شده نگه داشته می‌شود و هیچ‌جا به متن ساده نمایش داده نمی‌شود.</p>
+              </div>
+              <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "نصب خودکار"}</Button></div>
+            </>
+          ) : (
+            <>
+              <h3 className="font-black">نصب خودکار {failed ? "ناموفق شد" : ready ? "تمام شد ✅" : "در حال اجراست…"}</h3>
+              <div className="mt-3 space-y-2">
+                {(["connect", "docker", "net", "engine", "workers", "agent", "bench"] as const).map((s) => {
+                  const rec = prov.steps.find((x) => x.step === s);
+                  const active = !rec && prov.current_step === s;
+                  return (
+                    <div key={s} className="flex items-center gap-2 text-xs">
+                      <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-black ${rec?.ok ? "bg-emerald-500/20 text-emerald-200" : rec && !rec.ok ? "bg-red-500/20 text-red-200" : active ? "bg-sky-500/20 text-sky-200" : "bg-white/10 text-muted"}`}>
+                        {rec?.ok ? "✓" : rec && !rec.ok ? "✕" : active ? "…" : "·"}
+                      </span>
+                      <span className={active ? "font-bold" : ""}>{STEP_LABELS[s]}</span>
+                      {rec && <span className="mr-auto text-[11px] text-muted">{rec.msg_fa}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+              {failed && (
+                <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs leading-6 text-red-200">
+                  {prov.steps.filter((x) => !x.ok).map((x) => x.msg_fa).join(" ")}
+                  <div className="mt-2"><Button size="sm" onClick={retry} disabled={busy}>تلاش مجدد از همان مرحله</Button></div>
+                </div>
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                <Button variant="ghost" onClick={onClose}>بستن</Button>
+                {ready && <Button onClick={onDone}>متوجه شدم</Button>}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     );
   }
