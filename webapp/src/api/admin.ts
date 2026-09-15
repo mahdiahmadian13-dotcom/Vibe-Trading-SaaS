@@ -66,7 +66,21 @@ export type ServerRow = {
   status: string; observed_workers: number; online_workers: number; worker_names: string[];
   docker_ok: boolean; host_info: { hostname?: string; cpu_count?: number; mem_total_gb?: number; disk_total_gb?: number; os?: string } | null;
   last_heartbeat_at: string | null; created_at: string | null;
+  min_workers: number; max_workers: number; autoscale_enabled: boolean;
+  engine_healthy: boolean; engine_url_local: string | null;
+  capability: Record<string, unknown> | null; capability_warning: boolean;
+  provision_state: string | null; provision_step: string | null;
+  tailscale_ip: string | null; node_role: string | null; has_ssh: boolean;
 };
+
+export const getServer = (id: number) => api<ServerRow & {
+  workers: Array<{ name: string; status: string; last_seen: string | null }>;
+  provision_log: Array<{ step: string; ts: string; ok: boolean | null; msg_fa: string }>;
+  provision_job: { id: number; status: string; steps: ProvisionStep[] } | null;
+}>(`/api/v1/admin/servers/${id}`);
+
+export const manageServer = (id: number, body: { min_workers?: number; max_workers?: number; autoscale_enabled?: boolean; drain?: boolean }) =>
+  api<{ ok: boolean; id: number; status: string }>(`/api/v1/admin/servers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
 
 export const listServers = () => api<ServerRow[]>("/api/v1/admin/servers");
 export const createServer = (body: { name: string; region?: string | null; desired_workers?: number; worker_concurrency?: number; cpu_limit?: string; mem_limit?: string }) =>

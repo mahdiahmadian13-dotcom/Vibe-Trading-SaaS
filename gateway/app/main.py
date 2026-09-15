@@ -1749,7 +1749,9 @@ async def admin_list_servers(admin: User = Depends(_require_admin), db: AsyncSes
     rows = (await db.execute(select(ServerNode).order_by(ServerNode.id))).scalars().all()
     out = []
     for s in rows:
-        workers = (await db.execute(select(WorkerNode).where(WorkerNode.name.ilike(f"{s.name}-%")))).scalars().all()
+        workers = (await db.execute(select(WorkerNode).where(
+            (WorkerNode.server_id == s.id) | (WorkerNode.name.ilike(f"{s.name}-%"))
+        ))).scalars().all()
         online = [w for w in workers if w.status == "ready"]
         out.append({
             "id": s.id, "name": s.name, "region": s.region,
@@ -1765,8 +1767,81 @@ async def admin_list_servers(admin: User = Depends(_require_admin), db: AsyncSes
             "host_info": s.host_info,
             "last_heartbeat_at": s.last_heartbeat_at.isoformat() if s.last_heartbeat_at else None,
             "created_at": s.created_at.isoformat() if s.created_at else None,
+            # fleet US3: caps + capability + engine + provision at a glance
+            "min_workers": s.min_workers, "max_workers": s.max_workers,
+            "autoscale_enabled": s.autoscale_enabled,
+            "engine_healthy": s.engine_healthy,
+            "engine_url_local": s.engine_url_local,
+            "capability": s.capability, "capability_warning": s.capability_warning,
+            "provision_state": s.provision_state, "provision_step": s.provision_step,
+            "tailscale_ip": s.tailscale_ip, "node_role": s.node_role,
+            "has_ssh": bool(s.ssh_secret),
         })
     return out
+
+
+class ServerManageIn(BaseModel):
+    """US3 management: caps, autoscale, drain (one PATCH for the panel)."""
+    min_workers: int | None = Field(None, ge=0, le=64)
+    max_workers: int | None = Field(None, ge=1, le=64)
+    autoscale_enabled: bool | None = None
+    drain: bool | None = None  # True → draining (no new tasks); False → back online
+
+
+@app.patch("/api/v1/admin/servers/{server_id}")
+async def admin_manage_server(server_id: int, req: ServerManageIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """US3: caps + autoscale + drain from the panel, no SSH needed."""
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "سرور یافت نشد")
+    if req.min_workers is not None:
+        s.min_workers = req.min_workers
+    if req.max_workers is not None:
+        if req.max_workers < (req.min_workers if req.min_workers is not None else (s.min_workers or 0)):
+            raise HTTPException(400, "سقف نمی‌تواند از کمینه کمتر باشد")
+        s.max_workers = req.max_workers
+    if req.autoscale_enabled is not None:
+        s.autoscale_enabled = req.autoscale_enabled
+    if req.drain is True:
+        s.status = "draining"
+    elif req.drain is False and s.status == "draining":
+        s.status = "online"
+    await db.commit()
+    return {"ok": True, "id": s.id, "status": s.status,
+            "min_workers": s.min_workers, "max_workers": s.max_workers,
+            "autoscale_enabled": s.autoscale_enabled}
+
+
+@app.get("/api/v1/admin/servers/{server_id}")
+async def admin_server_detail(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """US3: full detail — capability bench, provision log, workers, engine."""
+    from shared.models import ProvisionJob as _ProvisionJob
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "سرور یافت نشد")
+    workers = (await db.execute(select(WorkerNode).where(
+        (WorkerNode.server_id == s.id) | (WorkerNode.name.ilike(f"{s.name}-%"))
+    ))).scalars().all()
+    job = (await db.execute(
+        select(_ProvisionJob).where(_ProvisionJob.server_id == s.id).order_by(_ProvisionJob.id.desc())
+    )).scalars().first()
+    return {
+        "id": s.id, "name": s.name, "region": s.region, "status": s.status,
+        "desired_workers": s.desired_workers, "observed_workers": s.observed_workers,
+        "min_workers": s.min_workers, "max_workers": s.max_workers,
+        "autoscale_enabled": s.autoscale_enabled,
+        "worker_concurrency": s.worker_concurrency, "cpu_limit": s.cpu_limit, "mem_limit": s.mem_limit,
+        "docker_ok": s.docker_ok, "host_info": s.host_info,
+        "engine_healthy": s.engine_healthy, "engine_url_local": s.engine_url_local,
+        "capability": s.capability, "capability_warning": s.capability_warning,
+        "provision_state": s.provision_state, "provision_step": s.provision_step,
+        "provision_log": s.provision_log or [],
+        "tailscale_ip": s.tailscale_ip, "node_role": s.node_role, "has_ssh": bool(s.ssh_secret),
+        "last_heartbeat_at": s.last_heartbeat_at.isoformat() if s.last_heartbeat_at else None,
+        "workers": [{"name": w.name, "status": w.status,
+                     "last_seen": w.last_seen_at.isoformat() if w.last_seen_at else None} for w in workers],
+        "provision_job": {"id": job.id, "status": job.status, "steps": job.steps or []} if job else None,
+    }
 
 
 @app.post("/api/v1/admin/servers")

@@ -418,6 +418,7 @@
     const [scaling, setScaling] = useState<number | null>(null);
     const [joinOpen, setJoinOpen] = useState(false);
     const [joinShow, setJoinShow] = useState<ServerRow | null>(null);
+    const [serverDetail, setServerDetail] = useState<number | null>(null);
     const [pendingServerDelete, setPendingServerDelete] = useState<number | null>(null);
     const [err, setErr] = useState("");
     const [addOpen, setAddOpen] = useState(false);
@@ -459,6 +460,11 @@
       try { await adminApi.scaleServer(s.id, { desired_workers: target }); onToast(target === 0 ? "ورکرها صفر شدند" : `درخواست شد: ${target} ورکر`); load(); }
       catch (e) { onToast((e as Error).message); }
       finally { setScaling(null); }
+    };
+
+    const drainServer = async (id: number, drain: boolean) => {
+      try { const r = await adminApi.manageServer(id, { drain }); onToast(drain ? "سرور به حالت تخلیه رفت — ورودی جدید قطع شد" : `سرور به چرخه برگشت (${r.status})`); load(); }
+      catch (e) { onToast((e as Error).message); }
     };
 
     const copySnippet = async () => {
@@ -556,12 +562,12 @@ docker compose -f docker-compose.worker.yml up -d --build`;
           {!servers ? <p className="text-xs text-muted">در حال بارگذاری…</p> : servers.length === 0 ? <p className="text-xs text-muted">سروری اضافه نشده — با «افزودن سرور» یک دستور یک‌خطی بگیرید.</p> : (
             <div className="overflow-auto">
               <table className="w-full min-w-[820px] text-xs">
-                <thead className="bg-white/[.04] text-[11px] text-muted"><tr><th className="px-3 py-2 text-right">سرور</th><th className="px-3 py-2 text-right">وضعیت</th><th className="px-3 py-2 text-right">ورکر</th><th className="px-3 py-2 text-right">منابع</th><th className="px-3 py-2 text-right">heartbeat</th><th className="px-3 py-2 text-right">عملیات</th></tr></thead>
+                <thead className="bg-white/[.04] text-[11px] text-muted"><tr><th className="px-3 py-2 text-right">سرور</th><th className="px-3 py-2 text-right">وضعیت</th><th className="px-3 py-2 text-right">ورکر</th><th className="px-3 py-2 text-right">سقف/خودکار</th><th className="px-3 py-2 text-right">انجین/توان</th><th className="px-3 py-2 text-right">heartbeat</th><th className="px-3 py-2 text-right">عملیات</th></tr></thead>
                 <tbody>
                   {servers.map((s) => (
                     <tr key={s.id} className="border-t border-white/5">
-                      <td className="px-3 py-2.5"><span className="font-bold">{s.name}</span>{s.region && <span className="mr-1.5 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">{s.region}</span>}<div className="text-[10px] text-muted">{s.host_info?.hostname ?? "—"} · {s.host_info?.cpu_count ?? "?"}vCPU · {s.host_info?.mem_total_gb ?? "?"}GB</div></td>
-                      <td className="px-3 py-2.5"><span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ${s.status === "online" ? "bg-emerald-500/15 text-emerald-200" : s.status === "pending" ? "bg-amber-500/15 text-amber-200" : "bg-red-500/15 text-red-200"}`}>{s.status === "online" ? "آنلاین" : s.status === "pending" ? "در انتظار نصب" : s.status}</span></td>
+                      <td className="px-3 py-2.5"><button onClick={() => setServerDetail(s.id)} className="font-bold hover:text-brand">{s.name}</button>{s.region && <span className="mr-1.5 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">{s.region}</span>}<div className="text-[10px] text-muted">{s.host_info?.hostname ?? "—"} · {s.host_info?.cpu_count ?? "?"}vCPU · {s.host_info?.mem_total_gb ?? "?"}GB</div></td>
+                      <td className="px-3 py-2.5"><span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ${s.status === "online" ? "bg-emerald-500/15 text-emerald-200" : s.status === "pending" ? "bg-amber-500/15 text-amber-200" : s.status === "draining" ? "bg-sky-500/15 text-sky-200" : "bg-red-500/15 text-red-200"}`}>{s.status === "online" ? "آنلاین" : s.status === "pending" ? "در انتظار نصب" : s.status === "draining" ? "در حال تخلیه" : s.status}</span></td>
                       <td className="px-3 py-2.5">
                         <div className="flex items-center gap-1.5">
                           <button disabled={scaling === s.id} onClick={() => changeScale(s, -1)} className="rounded-md border border-white/10 p-1 text-muted hover:bg-white/10 disabled:opacity-40"><Minus size={11} /></button>
@@ -570,11 +576,18 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                         </div>
                         <div className="mt-1 text-[10px] text-muted">همزمانی: {s.worker_concurrency} · {s.worker_names.slice(0, 2).join(", ")}{s.worker_names.length > 2 ? ` +${s.worker_names.length - 2}` : ""}</div>
                       </td>
-                      <td className="px-3 py-2.5 text-muted">{s.cpu_limit} CPU / {s.mem_limit}</td>
+                      <td className="px-3 py-2.5 text-muted"><span dir="ltr">{s.min_workers}–{s.max_workers}</span>{s.autoscale_enabled ? <span className="mr-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-200">خودکار</span> : <span className="mr-1 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">دستی</span>}</td>
+                      <td className="px-3 py-2.5 text-muted">
+                        <span className={s.engine_healthy ? "text-emerald-300" : "text-red-300"}>{s.engine_healthy ? "سالم" : "خراب"}</span>
+                        {s.capability_warning && <span className="mr-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-200">سرور ضعیف</span>}
+                      </td>
                       <td className="px-3 py-2.5 text-muted">{fmtFa(s.last_heartbeat_at)}</td>
                       <td className="px-3 py-2.5">
                         <div className="flex gap-1">
-                          <Button size="sm" variant="outline" onClick={() => setJoinShow(s)}>دستور نصب</Button>
+                          <Button size="sm" variant="outline" onClick={() => setServerDetail(s.id)}>جزئیات</Button>
+                          {s.status === "draining"
+                            ? <Button size="sm" variant="outline" onClick={() => drainServer(s.id, false)}>بازگردانی</Button>
+                            : <Button size="sm" variant="outline" onClick={() => drainServer(s.id, true)}>تخلیه</Button>}
                           <Button size="sm" variant="ghost" onClick={() => setPendingServerDelete(s.id)} className="text-red-300"><Trash2 size={12} /></Button>
                         </div>
                       </td>
@@ -584,8 +597,9 @@ docker compose -f docker-compose.worker.yml up -d --build`;
               </table>
             </div>
           )}
-          <p className="mt-3 text-[11px] leading-5 text-muted">ورکرهای هر سرور را همین‌جا با +/− تنظیم کنید — ایجنت روی سرور ظرف ~۱۰ ثانیه اعمال می‌کند. افزودن سرور: دکمه «افزودن سرور» → دستور یک‌خطی را روی سرور جدید اجرا کنید.</p>
+          <p className="mt-3 text-[11px] leading-5 text-muted">ورکرهای هر سرور را همین‌جا با +/− تنظیم کنید — ایجنت روی سرور ظرف ~۱۰ ثانیه اعمال می‌کند. سقف و حالت خودکار/دستی و تخلیه از همین جدول؛ جزئیات کامل (تست توان، لاگ نصب، ورکرها) با کلیک روی نام سرور.</p>
         </Card>
+        {serverDetail !== null && <ServerDetailModal serverId={serverDetail} onClose={() => { setServerDetail(null); load(); }} onToast={onToast} />}
 
         <Card className="p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -771,6 +785,80 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                 <Button variant="ghost" onClick={onClose}>بستن</Button>
                 {ready && <Button onClick={onDone}>متوجه شدم</Button>}
               </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Server detail modal (US-03): caps + autoscale + capability + provision log
+  // ---------------------------------------------------------------------------
+  function ServerDetailModal({ serverId, onClose, onToast }: { serverId: number; onClose: () => void; onToast: (m: string) => void }) {
+    const [d, setD] = useState<null | Awaited<ReturnType<typeof adminApi.getServer>>>(null);
+    const [err, setErr] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [caps, setCaps] = useState({ min_workers: 1, max_workers: 4, autoscale_enabled: true });
+    useEffect(() => {
+      adminApi.getServer(serverId)
+        .then((r) => { setD(r); setCaps({ min_workers: r.min_workers, max_workers: r.max_workers, autoscale_enabled: r.autoscale_enabled }); })
+        .catch((e: Error) => setErr(e.message));
+    }, [serverId]);
+    const save = async () => {
+      if (caps.max_workers < caps.min_workers) { setErr("سقف نمی‌تواند از کمینه کمتر باشد"); return; }
+      setBusy(true); setErr("");
+      try { await adminApi.manageServer(serverId, caps); onToast("ذخیره شد"); const r = await adminApi.getServer(serverId); setD(r); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setBusy(false); }
+    };
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+        <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
+          {!d ? (<p className="text-xs text-muted">{err || "در حال بارگذاری…"}</p>) : (
+            <>
+              <div className="flex items-center justify-between">
+                <h3 className="font-black">سرور «{d.name}»</h3>
+                <span className="text-xs text-muted">{d.status}</span>
+              </div>
+              {err && <p className="mt-2 rounded-lg bg-red-500/15 px-3 py-2 text-xs text-red-200">{err}</p>}
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-xl border border-white/10 p-3">
+                  <h4 className="mb-2 text-xs font-black text-muted">سقف و مقیاس خودکار</h4>
+                  <div className="flex gap-2 text-xs">
+                    <label className="flex-1">کمینه<input inputMode="numeric" value={caps.min_workers} onChange={(e) => setCaps({ ...caps, min_workers: Math.max(0, parseNum(e.target.value)) })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                    <label className="flex-1">سقف<input inputMode="numeric" value={caps.max_workers} onChange={(e) => setCaps({ ...caps, max_workers: Math.max(1, parseNum(e.target.value)) })} className="mt-1 w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2" /></label>
+                  </div>
+                  <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={caps.autoscale_enabled} onChange={(e) => setCaps({ ...caps, autoscale_enabled: e.target.checked })} /> مقیاس خودکار بر اساس صف</label>
+                  <div className="mt-2"><Button size="sm" onClick={save} disabled={busy}>ذخیره</Button></div>
+                </div>
+                <div className="rounded-xl border border-white/10 p-3 text-xs leading-6">
+                  <h4 className="mb-2 text-xs font-black text-muted">توان و سلامت</h4>
+                  <div>انجین محلی: <span className={d.engine_healthy ? "text-emerald-300" : "text-red-300"}>{d.engine_healthy ? "سالم" : "خراب"}</span></div>
+                  <div>داکر: {d.docker_ok ? "نصب است" : "نامشخص"}</div>
+                  {d.capability
+                    ? <div className="mt-1 text-muted">تست توان: <code dir="ltr" className="rounded bg-black/40 px-1">{JSON.stringify(d.capability)}</code>{d.capability_warning && <span className="mr-1 text-amber-200">— سرور ضعیف</span>}</div>
+                    : <div className="text-muted">تست توان هنوز اجرا نشده</div>}
+                  <div className="text-muted">نصب: {d.provision_state ?? "—"}{d.provision_step ? ` (${d.provision_step})` : ""} · SSH: {d.has_ssh ? "ثبت شده (رمزنگاری‌شده)" : "ندارد"}</div>
+                </div>
+              </div>
+              <div className="mt-3 rounded-xl border border-white/10 p-3">
+                <h4 className="mb-2 text-xs font-black text-muted">ورکرها ({d.workers.length})</h4>
+                {d.workers.length === 0 ? <p className="text-xs text-muted">ورکری ثبت نشده</p> : (
+                  <div className="flex flex-wrap gap-1.5 text-[11px]">
+                    {d.workers.map((w) => <span key={w.name} className={`rounded-full px-2 py-0.5 ${w.status === "ready" ? "bg-emerald-500/15 text-emerald-200" : "bg-white/10 text-muted"}`}>{w.name}</span>)}
+                  </div>
+                )}
+              </div>
+              {d.provision_log.length > 0 && (
+                <div className="mt-3 rounded-xl border border-white/10 p-3">
+                  <h4 className="mb-2 text-xs font-black text-muted">لاگ نصب</h4>
+                  <div className="space-y-1 text-[11px] leading-5">
+                    {d.provision_log.map((s, i) => <div key={i} className="flex gap-2"><span>{s.ok ? "✓" : "✕"}</span><span className="font-bold">{s.step}</span><span className="text-muted">{s.msg_fa}</span></div>)}
+                  </div>
+                </div>
+              )}
+              <div className="mt-4 flex justify-end"><Button onClick={onClose}>بستن</Button></div>
             </>
           )}
         </div>
