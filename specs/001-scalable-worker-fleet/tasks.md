@@ -52,11 +52,11 @@
 
 **Independent Test**: VPS خام فقط با فرم پنل به ناوگان اضافه شود؛ بدون هیچ دستوری روی آن سرور، گره کامل «آماده» شود و تسک بگیرد (quickstart §۳).
 
-- [ ] T014 [P] [US9] تست قراردادی `POST /servers` و `GET provision` و `POST provision/retry` در `tests/contract/test_provision.py` (۲۰۱، ۴۰۳ بدون نقش، ۴۲۲ SSH نامعتبر)
-- [ ] T015 [P] [US9] موتور نصب مرحله‌ای در `gateway/app/provision.py` (ماشین‌حالت `connect→docker→net→engine→workers→agent→bench→done` با `asyncssh` + سمافور ~۱۰ + تایم‌اوت هر مرحله + لاگ فارسی خط‌به‌خط + پین host-key)
-- [ ] T016 [US9] راوت‌های نصب در `gateway/app/main.py` (`POST /api/v1/admin/fleet/servers` با رمزنگاری سکرت، `GET .../provision` برای poll، `POST .../provision/retry` از همان مرحله) با گارد نقش `servers` (وابسته به T009، T015)
+- [X] T014 [P] [US9] تست قراردادی `POST /servers` و `GET provision` و `POST provision/retry` در `tests/contract/test_provision.py` (۲۰۱، ۴۰۳ بدون نقش، ۴۲۲ SSH نامعتبر)
+- [X] T015 [P] [US9] موتور نصب مرحله‌ای در `gateway/app/provision.py` (ماشین‌حالت `connect→docker→net→engine→workers→agent→bench→done` با `asyncssh` + سمافور ~۱۰ + تایم‌اوت هر مرحله + لاگ فارسی خط‌به‌خط + پین host-key)
+- [X] T016 [US9] راوت‌های نصب در `gateway/app/main.py` (`POST /api/v1/admin/fleet/servers` با رمزنگاری سکرت، `GET .../provision` برای poll، `POST .../provision/retry` از همان مرحله) با گارد نقش `servers` (وابسته به T009، T015)
 - [ ] T017 [US9] فرم «سرور جدید» + نوار پیشرفت زنده در `webapp/src/pages/AdminPage.tsx` (فیلدهای IP/کاربر + رمز/کلید، poll هر ۳ ثانیه حین نصب، دکمه تلاش مجدد، پیام خطای فارسی) (وابسته به T016)
-- [ ] T018 [US9] توسعه باندل گره برای نصب کامل در `gateway/app/main.py` تابع `node_bundle` (افزودن ایمیج/کامپوز انجین پین‌شده + تزریق `VIBE_ENGINE_URL=localhost` و کلید مشترک به env گره)
+- [X] T018 [US9] توسعه باندل گره برای نصب کامل در `gateway/app/main.py` تابع `node_bundle` (افزودن ایمیج/کامپوز انجین پین‌شده + تزریق `VIBE_ENGINE_URL=localhost` و کلید مشترک به env گره)
 - [ ] T019 [US9] E2E نصب روی VPS خام طبق `specs/001-scalable-worker-fleet/quickstart.md` §۳ (مدرک browser_console + `grep` عدم نشت سکرت در لاگ)
 
 **Checkpoint**: US9 مستقل کار می‌کند — سرور خام فقط با پنل «آماده» می‌شود.
