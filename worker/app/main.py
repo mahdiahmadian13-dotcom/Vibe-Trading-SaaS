@@ -125,6 +125,14 @@ async def publish_progress(user_id: int, task_id: str, data: dict):
     r = await get_redis()
     channel = f"user:{user_id}:progress"
     payload = json.dumps({"task_id": task_id, **data, "ts": time.time()})
+    # US4 idempotency: terminal states (completed/failed) are published once
+    # per task — a rescued/re-executed task re-emits running phases but the
+    # second terminal event is suppressed so the user gets exactly one result.
+    if data.get("status") in ("completed", "failed"):
+        key = f"vibe:delivered:{task_id}"
+        first = await r.set(key, "1", nx=True, ex=86400)
+        if not first:
+            return
     await r.publish(channel, payload)
 
 
