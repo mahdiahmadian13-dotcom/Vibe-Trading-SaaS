@@ -19,10 +19,10 @@
 
 **Purpose**: وابستگی‌ها و بستر مشترک — بدون این‌ها هیچ‌کدام از فازها شروع نمی‌شود.
 
-- [ ] T001 نصب وابستگی‌های جدید گیت‌وی در `gateway/requirements.txt` (افزودن `asyncssh`, `cryptography`)
-- [ ] T002 [P] نصب کتابخانه نمودار وب‌اپ با `npm i recharts` در `webapp/package.json` (پین major نسخه)
-- [ ] T003 [P] افزودن `FLEET_MASTER_KEY` به `/.env.example` و نمونه‌مقدار در `/root/vibe-trading-saas/.env` (فقط کلید، بدون سکرت واقعی در گیت)
-- [ ] T004 [P] ساخت اسکلت دایرکتوری `webapp/src/components/fleet/` و `webapp/src/api/admin.ts` (خالی با export اولیه)
+- [X] T001 نصب وابستگی‌های جدید گیت‌وی در `gateway/requirements.txt` (افزودن `asyncssh`, `cryptography`)
+- [X] T002 [P] نصب کتابخانه نمودار وب‌اپ با `npm i recharts` در `webapp/package.json` (پین major نسخه)
+- [X] T003 [P] افزودن `FLEET_MASTER_KEY` به `/.env.example` و نمونه‌مقدار در `/root/vibe-trading-saas/.env` (فقط کلید، بدون سکرت واقعی در گیت)
+- [X] T004 [P] ساخت اسکلت دایرکتوری `webapp/src/components/fleet/` — بدون دست‌زدن به `webapp/src/api/admin.ts` موجود (۱۲۰ خط، APIهای fleet/monitor زنده و سالم؛ اسکلت جدا لازم نبود)
 
 ---
 
@@ -32,15 +32,15 @@
 
 **⚠️ CRITICAL**: هیچ‌کدام از فازهای استوری قبل از اتمام این فاز شروع نمی‌شود.
 
-- [ ] T005 توسعه مدل `ServerNode` در `shared/models.py` (ستون‌ها: `ssh_host`, `ssh_user`, `ssh_secret`, `ssh_auth_type`, `engine_url_local`, `engine_healthy`, `min_workers`/`max_workers`, `autoscale_enabled`, `capability`, `capability_warning`, `provision_state`, `provision_step`, `provision_log`, `tailscale_ip` + وضعیت‌های `pending|online|degraded|offline|draining|decommissioned`)
-- [ ] T006 [P] مدل‌های جدید در `shared/models.py`: `AdminRole` (`name` یکتا, `perms` JSON)، `AdminRoleLink` (یکتا `user_id,role_id`)، `FleetMetric` (`server_id,ts` ایندکس مرکب, `metric`, `value`)، `ProvisionJob` (`server_id`, `status`, `current_step`, `steps` JSON, `triggered_by`)
-- [ ] T007 [P] ستون `server_id` (FK به `server_nodes`) در مدل `WorkerNode` در `shared/models.py`
-- [ ] T008 پیاده‌سازی `gateway/app/crypto.py` (Fernet + مشتق HKDF از `(FLEET_MASTER_KEY, server_id)`، توابع encrypt/decrypt، چرخش مستر با `key_id`، ممنوعیت لاگ plaintext)
-- [ ] T009 پیاده‌سازی گارد نقش در `gateway/app/roles.py` (وابستگی FastAPI `require_perm(perm)`، خواندن نقش کاربر از `AdminRoleLink`، پاسخ `403` فارسی)
-- [ ] T010 تکامل `gateway/app/coupons.py` به سیاست جدید در همان فایل (سقف فری: روزانه ۱ بک‌تست + هفتگی ۱ سوارم بدون انباشت؛ `welcome/referral` دائمی با `expires_at=NULL`؛ ترتیب مصرف اتمیک daily→دائمی در یک تراکنش؛ `refund` فقط خطای سمت ما)
-- [ ] T011 [P] ماژول جمع‌آوری متریک در `gateway/app/metrics.py` (نوشتن نمونه Redis زنده با TTL + درج `FleetMetric` + purge خام ۲۴ ساعته + rollup دقیقه‌ای)
-- [ ] T012 اعمال مایگریشن DB روی سرور واقعی (اجرای `create_all`/اسکریپت مایگریشن علیه Postgres مرکزی + تأیید جداول جدید)
-- [ ] T013 [P] تست واحد کریپتو و کوپن در `tests/unit/test_crypto_coupon.py` (رمز/گشایش، چرخش مستر، claim اتمیک، عدم انباشت روزانه، برگشت خطای سمت ما)
+- [X] T005 توسعه مدل `ServerNode` در `shared/models.py` (ستون‌ها: `ssh_host`, `ssh_user`, `ssh_secret`, `ssh_auth_type`, `engine_url_local`, `engine_healthy`, `min_workers`/`max_workers`, `autoscale_enabled`, `capability`, `capability_warning`, `provision_state`, `provision_step`, `provision_log`, `tailscale_ip` + وضعیت‌های `pending|online|degraded|offline|draining|decommissioned`)
+- [X] T006 [P] مدل‌های جدید در `shared/models.py`: `AdminRole` (`name` یکتا, `perms` JSON)، `AdminRoleLink` (یکتا `user_id,role_id`)، `FleetMetric` (`server_id,ts` ایندکس مرکب, `metric`, `value`)، `ProvisionJob` (`server_id`, `status`, `current_step`, `steps` JSON, `triggered_by`)
+- [X] T007 [P] ستون `server_id` (FK به `server_nodes`) در مدل `WorkerNode` در `shared/models.py`
+- [X] T008 پیاده‌سازی `gateway/app/crypto.py` (Fernet + مشتق HKDF از `(FLEET_MASTER_KEY, server_id)`، توابع encrypt/decrypt، چرخش مستر با `key_id`، ممنوعیت لاگ plaintext)
+- [X] T009 پیاده‌سازی گارد نقش در `gateway/app/roles.py` (وابستگی FastAPI `require_perm(perm)`، خواندن نقش کاربر از `AdminRoleLink`، پاسخ `403` فارسی)
+- [X] T010 تکامل `gateway/app/coupons.py` به سیاست جدید در همان فایل (سقف فری: روزانه ۱ بک‌تست + هفتگی ۱ سوارم بدون انباشت؛ `welcome/referral` دائمی با `expires_at=NULL`؛ ترتیب مصرف اتمیک daily→دائمی در یک تراکنش؛ `refund` فقط خطای سمت ما)
+- [X] T011 [P] ماژول جمع‌آوری متریک در `gateway/app/metrics.py` (نوشتن نمونه Redis زنده با TTL + درج `FleetMetric` + purge خام ۲۴ ساعته + rollup دقیقه‌ای)
+- [X] T012 اعمال مایگریشن DB روی سرور واقعی (اجرای `create_all`/اسکریپت مایگریشن علیه Postgres مرکزی + تأیید جداول جدید)
+- [X] T013 [P] تست واحد کریپتو و کوپن در `tests/unit/test_crypto_coupon.py` (رمز/گشایش، چرخش مستر، claim اتمیک، عدم انباشت روزانه، برگشت خطای سمت ما)
 
 **Checkpoint**: مدل‌ها + کریپتو + نقش + سهمیه + متریک آماده — پیاده‌سازی استوری‌ها می‌تواند شروع شود.
 

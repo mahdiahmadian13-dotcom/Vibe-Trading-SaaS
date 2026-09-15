@@ -1,12 +1,16 @@
-"""Free-tier coupon metering for Vibe-Trading SaaS.
+"""Free-tier coupon metering for Vibe-Trading SaaS (fleet 001 policy).
 
 A free user gets:
-  - 3 welcome backtest coupons (never expire)
-  - +1 backtest coupon per day, valid until Tehran midnight (23:59:59 +3:30)
-  - 1 swarm coupon per week
+  - 1 backtest coupon per day, valid until Tehran midnight (NO accumulation)
+  - 1 swarm coupon per week (Tehran ISO week)
+  - permanent credit (welcome pack for legacy users + referral bonuses),
+    consumed only when no daily/weekly coupon is available, never expires
 
 Paid plans (basic/pro/enterprise) bypass coupons — plan daily limits apply.
 All grants/claims are race-safe via the grant_key unique constraint.
+Consumption order is atomic: daily/weekly first, then permanent credit.
+Refunds happen only for platform-side failures (engine error, timeout,
+dead node) — input-validation rejections never consume in the first place.
 """
 
 from __future__ import annotations
@@ -105,21 +109,12 @@ async def grant_bonus(db: AsyncSession, user_id: int, count: int = 1, reason: st
 
 
 async def ensure_daily(db: AsyncSession, user_id: int) -> None:
-    """Grant today's Tehran-dated backtest coupon — only if welcome pack is done.
+    """Grant today's Tehran-dated backtest coupon (idempotent, no accumulation).
 
-    Daily refills start AFTER the 3 welcome coupons are used up, and each
-    daily coupon is valid only until Tehran midnight.
+    Fleet-001 policy: the daily coupon is granted regardless of welcome/
+    bonus credit — daily first, permanent credit only as fallback at
+    consume time. Expired dailies never accumulate (midnight kills them).
     """
-    # welcome still active? → no daily grant yet
-    rows = await db.execute(
-        select(Coupon).where(
-            Coupon.user_id == user_id, Coupon.kind == "backtest",
-            Coupon.source == "welcome", Coupon.status == "active",
-        )
-    )
-    if rows.scalars().first() is not None:
-        return
-
     key = f"daily:{tehran_today()}"
     c = Coupon(user_id=user_id, kind="backtest", source="daily", grant_key=key,
                expires_at=tehran_midnight_utc())
@@ -191,7 +186,9 @@ async def try_consume(db: AsyncSession, user: User, kind: str, action: str = "")
 
     Returns the consumed Coupon, or None if the user has no active coupon
     (caller raises 429 with a friendly Persian message).
-    Welcomes first (they never expire), then daily (may expire at claim time).
+    Fleet-001 order: daily/weekly first (they expire), then permanent
+    credit (welcome/bonus/referral — never expire). One transaction, so
+    two concurrent submits with 1 coupon left consume exactly once.
     """
     await ensure_daily(db, user.id) if kind == "backtest" else None
     await ensure_weekly(db, user.id) if kind == "swarm" else None
@@ -203,10 +200,9 @@ async def try_consume(db: AsyncSession, user: User, kind: str, action: str = "")
         .order_by(Coupon.created_at.asc())
     )).scalars().all()
 
-    # welcome first (oldest), then daily — validate expiry
     usable = [c for c in rows if c.expires_at is None or c.expires_at > now]
-    # prefer welcome (non-expiring) over daily to save the daily for later in the same day
-    usable.sort(key=lambda c: (c.expires_at is None, c.created_at))  # welcome first
+    # expiring (daily/weekly) first, then permanent credit (welcome/bonus)
+    usable.sort(key=lambda c: (c.expires_at is None, c.created_at))
     if not usable:
         return None
 

@@ -223,6 +223,7 @@ class WorkerNode(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(128), unique=True, nullable=False, index=True)
+    server_id = Column(Integer, ForeignKey("server_nodes.id"), nullable=True, index=True)  # host node (fleet)
     last_seen_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(32), default="ready")        # ready | gone
     info = Column(JSON, nullable=True)
@@ -300,7 +301,7 @@ class ServerNode(Base):
     cpu_limit = Column(String(16), default="2.0")
     mem_limit = Column(String(16), default="2G")
     # observed state (agent reports)
-    status = Column(String(32), default="pending")     # pending|online|offline|decommissioned
+    status = Column(String(32), default="pending")     # pending|online|degraded|offline|draining|decommissioned
     observed_workers = Column(Integer, default=0)
     docker_ok = Column(Boolean, default=False)
     host_info = Column(JSON, nullable=True)            # {cpu, mem, docker_ver, ...}
@@ -309,6 +310,24 @@ class ServerNode(Base):
     # the epoch the agent last rebuilt its workers for (heartbeat field).
     worker_epoch = Column(Integer, default=1, nullable=False, server_default="1")
     workers_epoch_reported = Column(Integer, default=0, nullable=False, server_default="0")
+    # --- scalable fleet (001): SSH provision + autoscale + capability ---
+    ssh_host = Column(String(256), nullable=True)       # private-net IP/hostname
+    ssh_user = Column(String(64), nullable=True)
+    ssh_secret = Column(Text, nullable=True)            # ENCRYPTED only (gateway/app/crypto.py) — never plaintext
+    ssh_auth_type = Column(String(16), nullable=True)   # password | key
+    ssh_key_id = Column(String(32), nullable=True)      # crypto key id used for ssh_secret
+    engine_url_local = Column(String(256), nullable=True)  # full-node local engine
+    engine_healthy = Column(Boolean, default=True)
+    min_workers = Column(Integer, default=1, nullable=False, server_default="1")
+    max_workers = Column(Integer, default=8, nullable=False, server_default="8")
+    autoscale_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    capability = Column(JSON, nullable=True)            # bench result {cpu, mem, disk, rtt_ms, verdict}
+    capability_warning = Column(Boolean, default=False)
+    provision_state = Column(String(32), default="none")  # none|running|failed|ready
+    provision_step = Column(String(64), nullable=True)
+    provision_log = Column(JSON, default=list, nullable=True)  # [{step, ts, ok, msg_fa}]
+    tailscale_ip = Column(String(64), nullable=True)
+    node_role = Column(String(32), default="full")      # full (worker+local engine); reserved
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
@@ -348,6 +367,59 @@ class SettingKV(Base):
     key = Column(String(128), primary_key=True)
     value = Column(JSON, nullable=True)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class AdminRole(Base):
+    """Definable admin role (US-12): named set of permission flags."""
+    __tablename__ = "admin_roles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), unique=True, nullable=False, index=True)  # e.g. viewer, operator
+    perms = Column(JSON, default=dict, nullable=True)  # {dashboard, servers, users, secrets, updates}
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class AdminRoleLink(Base):
+    """User → role assignment."""
+    __tablename__ = "admin_role_links"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    role_id = Column(Integer, ForeignKey("admin_roles.id"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "role_id", name="uq_rolelink_user_role"),
+    )
+
+
+class FleetMetric(Base):
+    """Downsampled metrics history per server (R5: wide rows, never one-row-per-metric)."""
+    __tablename__ = "fleet_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    server_id = Column(Integer, ForeignKey("server_nodes.id"), nullable=False, index=True)
+    ts = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    metric = Column(String(32), nullable=False)  # load | queue | tasks_ok | tasks_fail | workers | rtt
+    value = Column(String(64), nullable=True)    # float as text (keeps JSON ints intact)
+
+    __table_args__ = (
+        Index("ix_fleet_metrics_server_ts", "server_id", "ts"),
+    )
+
+
+class ProvisionJob(Base):
+    """One auto-provision run for a server (US-09): stepwise state + Persian log."""
+    __tablename__ = "provision_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    server_id = Column(Integer, ForeignKey("server_nodes.id"), nullable=False, index=True)
+    status = Column(String(32), default="running", index=True)  # running|failed|ready|cancelled
+    current_step = Column(String(64), nullable=True)  # connect|docker|net|engine|workers|agent|bench|done
+    steps = Column(JSON, default=list, nullable=True)  # [{step, ts, ok, msg_fa}]
+    triggered_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
 
 
 # ============================================================================
