@@ -339,6 +339,11 @@ class FleetUpdate(Base):
     which polls GET /api/v1/updater/poll and streams progress back via
     POST /api/v1/updater/report. Terminal statuses: success | failed |
     rolled_back | up_to_date.
+
+    US11: per_node JSON tracks the staged node rollout
+    ({server_id: pending|draining|updating|ok|rolled_back}) — at most one
+    node is non-terminal at a time so service never drops fleet-wide.
+    Cancel: cancel_requested flag lets the updater stop between nodes.
     """
     __tablename__ = "fleet_updates"
 
@@ -354,6 +359,9 @@ class FleetUpdate(Base):
     workers_epoch = Column(Integer, default=0)        # epoch this job rolled out (0 = none)
     log = Column(JSON, default=list, nullable=True)  # [{ts, line}, ...] capped
     error = Column(Text, nullable=True)
+    # US11 staged rollout
+    per_node = Column(JSON, default=dict, nullable=True)  # {server_id: status}
+    cancel_requested = Column(Boolean, default=False, nullable=False, server_default="false")
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)

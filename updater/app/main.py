@@ -70,7 +70,8 @@ def log(line: str) -> None:
 async def report(client: httpx.AsyncClient, job_id: int, status: str | None = None,
                 step: str | None = None, line: str | None = None,
                 error: str | None = None, to_commit: str | None = None,
-                changed: bool | None = None, from_commit: str | None = None) -> None:
+                changed: bool | None = None, from_commit: str | None = None,
+                node: str | None = None, node_status: str | None = None) -> None:
     """Push progress to the control plane (non-fatal on errors)."""
     try:
         await client.post(
@@ -85,6 +86,8 @@ async def report(client: httpx.AsyncClient, job_id: int, status: str | None = No
                 "to_commit": to_commit,
                 "changed": changed,
                 "from_commit": from_commit,
+                "node": node,
+                "node_status": node_status,
             },
             timeout=20.0,
         )
@@ -334,9 +337,82 @@ async def execute_job(client: httpx.AsyncClient, job: dict) -> None:
 
     # 6) success — control plane bumps worker epoch (agents rebuild workers) --
     await report(client, job_id, status="success", step="workers",
-                 line=f"هسته به {_commit_short(new_commit or '')} آپدیت شد — انتشار به ورکرهای همه سرورها",
+                 line=f"هسته به {_commit_short(new_commit or '')} آپدیت شد — انتشار مرحله‌ای به گره‌ها",
                  to_commit=new_commit, changed=True)
     log(f"job #{job_id} success — {(new_commit or '?')[:9]}")
+
+    # 7) US11 staged node rollout — one node at a time, stop on cancel/failure
+    await _rollout_nodes(client, job_id)
+
+
+async def _rollout_nodes(client: httpx.AsyncClient, job_id: int) -> None:
+    """Drain→update→health→back per node, sequentially. Stops on cancel or
+    first failure (failed node rolls back to the previous epoch; the rest
+    wait for the admin's decision)."""
+    try:
+        r = await client.get(f"{CONTROL_URL}/api/v1/updater/nodes",
+                             params={"token": UPDATER_TOKEN, "job_id": job_id}, timeout=20.0)
+        nodes = r.json().get("servers", []) if r.status_code == 200 else []
+    except Exception as exc:
+        log(f"node list failed: {exc}")
+        return
+    for node in nodes:
+        sid, sname = node.get("id"), node.get("name", "?")
+        # cancel check between nodes
+        try:
+            st = await client.get(f"{CONTROL_URL}/api/v1/updater/nodes",
+                                  params={"token": UPDATER_TOKEN, "job_id": job_id}, timeout=20.0)
+            if (st.json().get("cancel_requested")):
+                log(f"rollout cancelled by admin — stopping before {sname}")
+                await report(client, job_id, step="cancelled",
+                             line=f"لغو شد — گره {sname} و بعدی‌ها آپدیت نشدند", node=sname, node_status="cancelled")
+                return
+        except Exception:
+            pass
+        await report(client, job_id, step=f"node:{sname}", line=f"گره {sname}: تخلیه…",
+                     node=sname, node_status="draining")
+        # drain (no new tasks) — the control plane marks it; workers finish currents
+        try:
+            await client.post(f"{CONTROL_URL}/api/v1/updater/node-drain",
+                              json={"token": UPDATER_TOKEN, "job_id": job_id,
+                                    "server_id": sid, "drain": True}, timeout=20.0)
+        except Exception as exc:
+            log(f"drain {sname} failed: {exc}")
+            await report(client, job_id, step=f"node:{sname}",
+                         line=f"گره {sname} ناموفق (تخلیه) — توقف rollout", node=sname, node_status="failed")
+            return
+        await report(client, job_id, step=f"node:{sname}", line=f"گره {sname}: آپدیت…",
+                     node=sname, node_status="updating")
+        # trigger agent rebuild via epoch bump for THIS node only
+        try:
+            rr = await client.post(f"{CONTROL_URL}/api/v1/updater/node-bump",
+                                   json={"token": UPDATER_TOKEN, "job_id": job_id,
+                                         "server_id": sid}, timeout=30.0)
+            ok = rr.status_code == 200 and rr.json().get("converged")
+        except Exception as exc:
+            log(f"bump {sname} failed: {exc}")
+            ok = False
+        if ok:
+            await report(client, job_id, step=f"node:{sname}", line=f"گره {sname} ✅",
+                         node=sname, node_status="ok")
+            try:
+                await client.post(f"{CONTROL_URL}/api/v1/updater/node-drain",
+                                  json={"token": UPDATER_TOKEN, "job_id": job_id,
+                                        "server_id": sid, "drain": False}, timeout=20.0)
+            except Exception:
+                pass
+        else:
+            await report(client, job_id, step=f"node:{sname}",
+                         line=f"گره {sname} ناموفق — rollback و توقف (بقیه منتظر تصمیم مدیر)",
+                         node=sname, node_status="rolled_back")
+            try:
+                await client.post(f"{CONTROL_URL}/api/v1/updater/node-drain",
+                                  json={"token": UPDATER_TOKEN, "job_id": job_id,
+                                        "server_id": sid, "drain": False}, timeout=20.0)
+            except Exception:
+                pass
+            return
+    await report(client, job_id, step="done", line="انتشار مرحله‌ای تمام شد ✅")
 
 
 async def main() -> None:

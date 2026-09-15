@@ -2355,6 +2355,11 @@ async def updater_report(body: dict, db: AsyncSession = Depends(get_db)):
         job.changed = bool(body["changed"])
     if body.get("error"):
         job.error = str(body["error"])[:2000]
+    # US11 staged rollout: per-node status updates from the updater
+    if body.get("node") and body.get("node_status"):
+        pn = dict(job.per_node or {})
+        pn[str(body["node"])] = str(body["node_status"])[:32]
+        job.per_node = pn
     status = body.get("status")
     if status:
         job.status = str(status)
@@ -2409,6 +2414,8 @@ async def admin_fleet_update_status(admin: User = Depends(_can_dashboard), db: A
             "from_commit": job.from_commit, "to_commit": job.to_commit,
             "changed": job.changed, "log": job.log or [],
             "error": job.error,
+            "per_node": job.per_node or {},  # US11 staged rollout
+            "cancel_requested": job.cancel_requested,
             "started_at": job.started_at.isoformat() if job.started_at else None,
             "finished_at": job.finished_at.isoformat() if job.finished_at else None,
             "created_at": job.created_at.isoformat() if job.created_at else None,
@@ -2423,6 +2430,75 @@ async def admin_fleet_update_status(admin: User = Depends(_can_dashboard), db: A
             } for s in servers
         ],
     }
+
+
+@app.delete("/api/v1/admin/fleet/update/{job_id}")
+async def admin_fleet_update_cancel(job_id: int, admin: User = Depends(_can_updates), db: AsyncSession = Depends(get_db)):
+    """US11 T043: request cancel of a running rollout (updater stops between nodes)."""
+    job = (await db.execute(select(FleetUpdate).where(FleetUpdate.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "آپدیت یافت نشد")
+    if job.status not in ("pending", "running"):
+        return {"ok": True, "status": job.status, "detail": "آپدیت در حال اجرا نیست"}
+    job.cancel_requested = True
+    await db.commit()
+    return {"ok": True, "status": job.status, "cancel_requested": True}
+
+
+class UpdaterNodeOp(BaseModel):
+    token: str = ""
+    job_id: int = 0
+    server_id: int = 0
+    drain: bool = True
+
+
+@app.get("/api/v1/updater/nodes")
+async def updater_nodes(token: str, job_id: int, db: AsyncSession = Depends(get_db)):
+    """US11: staged rollout node list + cancel flag for the updater."""
+    _require_updater_token(token)
+    job = (await db.execute(select(FleetUpdate).where(FleetUpdate.id == job_id))).scalar_one_or_none()
+    if not job:
+        raise HTTPException(404, "job not found")
+    servers = (await db.execute(
+        select(ServerNode).where(ServerNode.status.in_(("online", "degraded", "draining"))).order_by(ServerNode.id)
+    )).scalars().all()
+    return {"cancel_requested": job.cancel_requested,
+            "servers": [{"id": s.id, "name": s.name, "status": s.status} for s in servers]}
+
+
+@app.post("/api/v1/updater/node-drain")
+async def updater_node_drain(body: UpdaterNodeOp, db: AsyncSession = Depends(get_db)):
+    """US11: drain (or undrain) one node during staged rollout."""
+    _require_updater_token(body.token)
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == body.server_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "server not found")
+    s.status = "draining" if body.drain else "online"
+    await db.commit()
+    return {"ok": True, "status": s.status}
+
+
+@app.post("/api/v1/updater/node-bump")
+async def updater_node_bump(body: UpdaterNodeOp, db: AsyncSession = Depends(get_db)):
+    """US11: bump worker_epoch for ONE node and wait for agent convergence.
+
+    Returns converged=true when the agent reports back the new epoch
+    (polls up to ~90s); false means the node failed → updater rolls back.
+    """
+    _require_updater_token(body.token)
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == body.server_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "server not found")
+    epoch = int(_utcnow().timestamp())
+    s.worker_epoch = epoch
+    await db.commit()
+    for _ in range(18):  # ~90s
+        await asyncio.sleep(5)
+        await db.refresh(s)
+        if (s.workers_epoch_reported or 0) >= epoch and (s.status in ("online", "draining")):
+            return {"ok": True, "converged": True, "epoch": epoch}
+    await db.refresh(s)
+    return {"ok": True, "converged": False, "epoch": epoch}
 
 
 # ============================================================================

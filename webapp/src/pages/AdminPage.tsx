@@ -567,6 +567,11 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                   <Button variant="outline" size="sm" disabled={updBusy || running} onClick={() => setUpdConfirm(true)} className="gap-1.5">
                     <RefreshCw size={13} /> بروزرسانی همه ورکرها
                   </Button>
+                  {running && (
+                    <Button variant="ghost" size="sm" onClick={async () => { try { await adminApi.cancelFleetUpdate(job!.id); onToast("درخواست لغو ثبت شد — بین دو گره متوقف می‌شود"); } catch (e) { onToast((e as Error).message); } }} className="gap-1.5 text-red-300">
+                      <X size={13} /> لغو آپدیت
+                    </Button>
+                  )}
                 </div>
               );
             })()}
@@ -608,6 +613,18 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                 {(job.log ?? []).length > 0 && (
                   <div dir="ltr" className="max-h-44 overflow-auto rounded-xl border border-white/10 bg-black/50 p-3 text-left font-mono text-[11px] leading-5 text-emerald-200">
                     {(job.log ?? []).map((l, i) => <div key={i}><span className="text-muted">{(l.ts ?? "").slice(11, 19)}</span> {l.line}</div>)}
+                  </div>
+                )}
+                {Object.keys(job.per_node ?? {}).length > 0 && (
+                  <div className="rounded-xl border border-white/10 p-3">
+                    <div className="mb-2 text-[11px] font-black text-muted">انتشار مرحله‌ای گره‌ها (یکی‌یکی — حداکثر یک گره هم‌زمان)</div>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(job.per_node ?? {}).map(([name, st]) => (
+                        <span key={name} className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-bold ${st === "ok" ? "bg-emerald-500/10 text-emerald-200" : st === "rolled_back" || st === "failed" ? "bg-red-500/10 text-red-200" : st === "cancelled" ? "bg-white/10 text-muted" : "bg-sky-500/10 text-sky-200"}`}>
+                          {st === "ok" ? "✓" : st === "rolled_back" || st === "failed" ? "✗" : "⏳"} {name}: {st === "ok" ? "به‌روز" : st === "draining" ? "تخلیه" : st === "updating" ? "در حال آپدیت" : st === "rolled_back" ? "برگشت + توقف" : st === "failed" ? "ناموفق + توقف" : st === "cancelled" ? "لغو شد" : st}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 )}
                 {(updStatus?.servers ?? []).length > 0 && (

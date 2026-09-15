@@ -153,6 +153,7 @@ export type FleetUpdateJob = {
   id: number; status: string; step: string; scope: string;
   from_commit: string | null; to_commit: string | null; changed: boolean;
   log: Array<{ ts: string; line: string }>; error: string | null;
+  per_node: Record<string, string>; cancel_requested: boolean;  // US11 staged rollout
   started_at: string | null; finished_at: string | null; created_at: string | null;
 };
 
@@ -164,6 +165,8 @@ export type FleetUpdateStatus = {
 export const triggerFleetUpdate = (include_platform: boolean) =>
   api<{ id: number; status: string; scope: string }>("/api/v1/admin/fleet/update", { method: "POST", body: JSON.stringify({ include_platform }) });
 export const getFleetUpdateStatus = () => api<FleetUpdateStatus>("/api/v1/admin/fleet/update/status");
+export const cancelFleetUpdate = (jobId: number) =>
+  api<{ ok: boolean; status: string }>(`/api/v1/admin/fleet/update/${jobId}`, { method: "DELETE" });
 
 
   // ---------------------------------------------------------------------------
