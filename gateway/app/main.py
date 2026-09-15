@@ -215,9 +215,13 @@ async def lifespan(app: FastAPI):
     await start_dispatcher()
 
     start_background_loops()
+    # US5+US7 T050: per-server autoscaler (60s loop, manual override wins)
+    from app.autoscale import start_autoscale_loop, stop_autoscale_loop
+    start_autoscale_loop()
     yield
     await stop_dispatcher()
     await stop_background_loops()
+    await stop_autoscale_loop()
 
 
 app = FastAPI(
@@ -1965,12 +1969,46 @@ async def admin_provision_retry(server_id: int, admin: User = Depends(_can_serve
 @app.get("/api/v1/admin/servers")
 async def admin_list_servers(admin: User = Depends(_can_dashboard), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(ServerNode).order_by(ServerNode.id))).scalars().all()
+    # T049: dispatcher live view (queue+inflight per worker) for load cards.
+    # NOTE: decode_responses=False here (raw bytes) — decode explicitly.
+    dispatch_view: dict = {}
+    try:
+        from app.dispatch import get_dispatcher
+        disp = get_dispatcher()
+        r = await disp._r()
+        reg = await r.hgetall("workers:registry") or {}
+        import json as _json
+        def _dec(v):
+            return v.decode() if isinstance(v, (bytes, bytearray)) else (v or "")
+        dworkers = []
+        for wname_b, blob_b in reg.items():
+            wname = _dec(wname_b)
+            blob = _dec(blob_b)
+            try:
+                info = _json.loads(blob) if blob else {}
+            except Exception:
+                info = {}
+            try:
+                qd = int(await r.zcard(f"arq:q:{wname}")) or 0
+            except Exception:
+                qd = 0
+            try:
+                infl = int(await r.hlen(f"vibe:dispatch:inflight:{wname}")) or 0
+            except Exception:
+                infl = 0
+            dworkers.append({"name": wname, "queue_depth": qd, "inflight": infl, "load": qd + infl,
+                             "status": (info or {}).get("status", "ready")})
+        dispatch_view = {"workers": dworkers}
+    except Exception:
+        pass
     out = []
     for s in rows:
         workers = (await db.execute(select(WorkerNode).where(
             (WorkerNode.server_id == s.id) | (WorkerNode.name.ilike(f"{s.name}-%"))
         ))).scalars().all()
         online = [w for w in workers if w.status == "ready"]
+        # T049: per-worker load cards (queue+inflight from dispatcher view)
+        dq = {d["name"]: d for d in (dispatch_view.get("workers", []) if isinstance(dispatch_view, dict) else [])}
         out.append({
             "id": s.id, "name": s.name, "region": s.region,
             "join_token": s.join_token,
@@ -1981,6 +2019,11 @@ async def admin_list_servers(admin: User = Depends(_can_dashboard), db: AsyncSes
             "observed_workers": s.observed_workers,
             "online_workers": len(online),
             "worker_names": sorted(w.name for w in online),
+            "worker_loads": [{"name": w.name, "status": w.status,
+                              "queue": (dq.get(w.name) or {}).get("queue_depth", 0),
+                              "inflight": (dq.get(w.name) or {}).get("inflight", 0),
+                              "load": (dq.get(w.name) or {}).get("load", 0)}
+                             for w in online],
             "docker_ok": s.docker_ok,
             "host_info": s.host_info,
             "last_heartbeat_at": s.last_heartbeat_at.isoformat() if s.last_heartbeat_at else None,
@@ -2025,6 +2068,12 @@ async def admin_manage_server(server_id: int, req: ServerManageIn, admin: User =
     elif req.drain is False and s.status == "draining":
         s.status = "online"
     await db.commit()
+    # T050: manual touch silences autoscale for COOLDOWN (human always wins)
+    try:
+        from app.autoscale import note_manual_change
+        note_manual_change(s.id)
+    except Exception:
+        pass
     return {"ok": True, "id": s.id, "status": s.status,
             "min_workers": s.min_workers, "max_workers": s.max_workers,
             "autoscale_enabled": s.autoscale_enabled}
@@ -2264,6 +2313,10 @@ async def node_heartbeat(token: str, body: dict, db: AsyncSession = Depends(get_
     s.observed_workers = int(body.get("observed_workers", 0) or 0)
     s.docker_ok = bool(body.get("docker_ok", False))
     s.host_info = body.get("host_info") or {}
+    # T048: capability bench verdict (advisory — never blocks)
+    if isinstance(body.get("capability"), dict):
+        s.capability = body["capability"]
+        s.capability_warning = bool(body["capability"].get("weak"))
     s.last_heartbeat_at = _utcnow()
     # fleet-update convergence: which worker bundle epoch this server runs
     if body.get("workers_epoch"):

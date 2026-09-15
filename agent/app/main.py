@@ -173,6 +173,51 @@ def _mem_total_gb() -> float:
     return 0.0
 
 
+def _capability_bench() -> dict:
+    """T048: one-shot capability bench at agent start (cheap, ~50ms).
+
+    CPU: timed pure-python loop (relative score, not absolute FLOPS).
+    RTT: TCP connect latency to control plane (no auth, fast fail).
+    Verdict: weak if <2 vCPU or <2GB RAM or RTT > 800ms — advisory only,
+    NEVER blocks join (FR: warn, don't block).
+    """
+    import socket
+    import time as _t
+    t0 = _t.perf_counter()
+    acc = 0
+    for i in range(200_000):
+        acc += i * i
+    cpu_ms = round((_t.perf_counter() - t0) * 1000, 1)
+    rtt_ms: float | None = None
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(CONTROL_URL).hostname or ""
+        port = urlparse(CONTROL_URL).port or 443
+        s = socket.create_connection((host, port), timeout=5)
+        t1 = _t.perf_counter()
+        s.close()
+        rtt_ms = round((_t.perf_counter() - t1) * 1000, 1)
+    except Exception:
+        pass
+    mem = _mem_total_gb()
+    cpus = os.cpu_count() or 0
+    reasons = []
+    if cpus < 2:
+        reasons.append(f"CPU کم ({cpus} هسته)")
+    if mem and mem < 2.0:
+        reasons.append(f"RAM کم ({mem:.1f}GB)")
+    if rtt_ms is not None and rtt_ms > 800:
+        reasons.append(f"تاخیر شبکه بالا ({rtt_ms:.0f}ms)")
+    return {
+        "cpu_loop_ms": cpu_ms, "rtt_ms": rtt_ms,
+        "cpu_count": cpus, "mem_total_gb": round(mem, 1),
+        "weak": bool(reasons), "reasons": reasons,
+    }
+
+
+_CAPABILITY: dict = {}
+
+
 def _docker_ok() -> bool:
     rc, _ = _run(["docker", "version", "--format", "{{.Server.Version}}"])
     return rc == 0
@@ -229,6 +274,7 @@ async def heartbeat_loop():
                 "observed_workers": max(_ps_running_workers(), 0),
                 "docker_ok": _docker_ok(),
                 "host_info": _host_info(),
+                "capability": _CAPABILITY or _capability_bench(),  # T048: bench once, send always
                 "last_error": _last_error,
                 "workers_epoch": _epoch_applied,
                 "ts": _now(),
@@ -242,6 +288,10 @@ async def heartbeat_loop():
 async def main():
     if not JOIN_TOKEN or not CONTROL_URL:
         raise SystemExit("VT_JOIN_TOKEN / VT_CONTROL_URL required")
+    global _CAPABILITY
+    _CAPABILITY = _capability_bench()  # T048: one-shot at start (~50ms)
+    if _CAPABILITY.get("weak"):
+        print(f"[agent] capability WARNING (advisory, join continues): {'; '.join(_CAPABILITY['reasons'])}", flush=True)
     print(f"[agent] starting — server={SERVER_NAME or '(from state)'} control={CONTROL_URL}", flush=True)
     await asyncio.gather(reconcile_loop(), heartbeat_loop())
 
