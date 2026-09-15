@@ -802,6 +802,11 @@ class TaskRequest(BaseModel):
     task_type: str  # backtest, swarm, chat
     params: dict = {}
 
+    @classmethod
+    def _strip_internal(cls, params: dict | None) -> dict:
+        """Remove _-prefixed internal keys (e.g. _coupon_id) from user input."""
+        return {k: v for k, v in (params or {}).items() if not k.startswith("_")}
+
 
 @app.post("/api/v1/tasks")
 async def create_task(
@@ -829,7 +834,9 @@ async def create_task(
         user_id=user.id,
         task_type=req.task_type,
         status=TaskStatus.PENDING,
-        params=req.params,
+        params={**TaskRequest._strip_internal(req.params),
+                # FR-014b: which coupon paid for this task (for platform-fault refunds)
+                "_coupon_id": used_coupon.id if used_coupon else None},
     )
     db.add(task)
 
@@ -1407,6 +1414,42 @@ async def admin_list_tasks(
     return result.scalars().all()
 
 
+class TaskRefundIn(BaseModel):
+    reason: str = "platform-fault"  # admin note (logged in coupon.action)
+
+
+@app.post("/api/v1/admin/tasks/{task_id}/refund")
+async def admin_refund_task(task_id: str, req: TaskRefundIn, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """FR-014b: refund the coupon consumed by a platform-faulted task.
+
+    Only tasks in FAILED status with a recorded _coupon_id qualify, and only
+    once (coupon flips back to active → second refund finds nothing to do).
+    PENDING/RUNNING tasks are rejected — the worker may still consume them.
+    """
+    from shared.models import Coupon as _Coupon
+    task = (await db.execute(select(Task).where(Task.task_id == task_id))).scalar_one_or_none()
+    if not task:
+        raise HTTPException(404, "تسک یافت نشد")
+    if task.status != TaskStatus.FAILED:
+        raise HTTPException(400, "فقط تسک ناموفق قابل برگشت است (تسک در حال اجرا/صف را نمی‌توان برگرداند)")
+    coupon_id = (task.params or {}).get("_coupon_id")
+    if not coupon_id:
+        raise HTTPException(400, "این تسک با کوپن پرداخت نشده (یا پلن پولی)")
+    c = (await db.execute(select(_Coupon).where(_Coupon.id == coupon_id))).scalar_one_or_none()
+    if not c:
+        raise HTTPException(404, "کوپن یافت نشد")
+    if c.status != "used":
+        return {"ok": True, "refunded": False, "detail": "کوپن قبلاً برگشته است"}
+    # expired daily? extend to end of today so the refund is usable
+    if c.expires_at is not None and c.expires_at <= _utcnow():
+        c.expires_at = coupons_mod.tehran_midnight_utc()
+    c.status = "active"
+    c.used_at = None
+    c.action = f"refund:{req.reason}:by-admin-{admin.id}"
+    await db.commit()
+    return {"ok": True, "refunded": True, "coupon_id": c.id, "kind": c.kind}
+
+
 # ============================================================================
 # Run Detail Proxy (full backtest report)
 # ============================================================================
@@ -1915,6 +1958,17 @@ async def admin_server_detail(server_id: int, admin: User = Depends(_require_adm
                      "last_seen": w.last_seen_at.isoformat() if w.last_seen_at else None} for w in workers],
         "provision_job": {"id": job.id, "status": job.status, "steps": job.steps or []} if job else None,
     }
+
+
+@app.post("/api/v1/admin/servers/{server_id}/token/rotate")
+async def admin_rotate_join_token(server_id: int, admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """FR-011: revoke + regenerate a server's join token (old token dies immediately)."""
+    s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "سرور یافت نشد")
+    s.join_token = secrets.token_urlsafe(24)
+    await db.commit()
+    return {"ok": True, "id": s.id, "join_token": s.join_token}
 
 
 @app.post("/api/v1/admin/servers")

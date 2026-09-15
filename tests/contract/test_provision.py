@@ -11,6 +11,8 @@ import requests
 
 BASE = os.getenv("VT_BASE", "http://127.0.0.1:9001")
 TOKEN = os.getenv("VT_ADMIN_TOKEN", "")
+# NOTE: when running locally without VT_ADMIN_TOKEN, export the real admin
+# password: VT_ADMIN_PASS=<from server .env> (never commit it).
 
 
 def _h(token=TOKEN):

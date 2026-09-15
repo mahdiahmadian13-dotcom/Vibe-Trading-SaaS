@@ -4,8 +4,8 @@ import { FlaskConical, Timer, Users, Zap } from "lucide-react";
 import { api } from "@/api/client";
 
 /* --------------------------------------------------------------------------- */
-/*  Coupon wallet — free-tier metering UI                                       */
-/*  · backtest: welcome pack (3) + 1/day (Tehran midnight)                       */
+/*  Coupon wallet — free-tier metering UI (fleet 001 policy)                     */
+/*  · backtest: 1/day (Tehran midnight, NO accumulation) + permanent credit     */
 /*  · swarm: 1/week (Monday 00:00 Tehran)                                       */
 /* --------------------------------------------------------------------------- */
 
@@ -119,7 +119,7 @@ function BacktestCard({ w, compact }: { w: CouponWallet; compact?: boolean }) {
           {has ? (
             <div className="flex flex-col items-end gap-1">
               {bt.welcome_left > 0 && (
-                <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-bold text-indigo-200">کوپن خوش‌آمد: {fa(bt.welcome_left)}</span>
+                <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-bold text-indigo-200">اعتبار دائمی: {fa(bt.welcome_left)}</span>
               )}
               {bt.daily && (
                 <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] font-bold text-muted">کوپن امروز فعال</span>
