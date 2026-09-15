@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import redis.asyncio as aioredis
+from sqlalchemy import select
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 FALLBACK_QUEUE = "arq:q:fallback"
@@ -68,6 +69,7 @@ class WorkerInfo:
     heartbeat_at: str = ""
     engine: str = ""
     queue: str = ""
+    server_id: int | None = None  # fleet: host node (resolved from worker_nodes)
 
     @property
     def is_ready(self) -> bool:
@@ -145,13 +147,36 @@ class Dispatcher:
         return int(qd) + int(inflight)
 
     async def pick_worker(self, exclude: set[str] | None = None) -> Optional[WorkerInfo]:
-        """Least-loaded READY worker; None = route to fallback."""
+        """Least-loaded READY worker; None = route to fallback.
+
+        Fleet (T020): workers on draining/offline/decommissioned servers are
+        excluded — the server map is refreshed from worker_nodes on each
+        pick (cheap indexed query, no extra Redis round-trips).
+        """
         exclude = exclude or set()
-        cands = [w for w in await self.get_workers() if w.is_ready and w.name not in exclude]
+        blocked = await self._blocked_server_workers()
+        cands = [w for w in await self.get_workers()
+                 if w.is_ready and w.name not in exclude and w.name not in blocked]
         if not cands:
             return None
         loads = await asyncio.gather(*(self.worker_load(w) for w in cands))
         return min(zip(loads, cands), key=lambda p: p[0])[1]
+
+    async def _blocked_server_workers(self) -> set[str]:
+        """Worker names hosted on non-routable servers (draining/offline/...)."""
+        try:
+            from shared.models import _session_factory, ServerNode, WorkerNode
+            async with _session_factory() as db:
+                rows = (await db.execute(
+                    select(WorkerNode.name).join(
+                        ServerNode, ServerNode.id == WorkerNode.server_id
+                    ).where(ServerNode.status.in_(
+                        ("draining", "offline", "decommissioned", "degraded")
+                    ))
+                )).all()
+                return {r[0] for r in rows}
+        except Exception:
+            return set()
 
     # ------------------------------------------------------------- dispatch
     async def dispatch(self, function: str, args: tuple, plan: str = "free",
@@ -195,9 +220,16 @@ class Dispatcher:
     INFLIGHT_TTL_MS = 20 * 60 * 1000  # 20 min — hard cap on any single job
 
     async def _reap_tick(self) -> None:
-        """Rescue dead-worker queues + drain fallback + expire stale inflight."""
+        """Rescue dead-worker queues + drain fallback + expire stale inflight.
+
+        Fleet (T021): a whole dead SERVER is detected via worker_nodes →
+        server_nodes (status offline/decommissioned or heartbeat stale), and
+        ALL its workers' queues are moved to fallback in one pass. Per-worker
+        rescue below is unchanged.
+        """
         r = await self._r()
         live = {w.name for w in await self.get_workers() if w.is_ready}
+        await self._reap_dead_servers(r, live)
 
         # 0) Expire inflight members older than TTL (lost completion / zombie entries)
         now_ms = int(time.time() * 1000)
@@ -253,6 +285,52 @@ class Dispatcher:
             moved_ids.append(job_id)
         await pipe.execute()
         await r.hincrby(STATS_KEY, "reaped", len(moved_ids))
+
+    async def _reap_dead_servers(self, r, live: set[str]) -> None:
+        """Move ALL queues of a dead server's workers to fallback at once.
+
+        A server counts as dead when its DB status is offline/decommissioned
+        (set by the health loop / admin) — its workers' heartbeats are gone
+        with it, so per-worker rescue would trickle them one tick at a time.
+        Group rescue keeps plan-priority scores intact (zadd preserves score).
+        """
+        try:
+            from shared.models import _session_factory, ServerNode, WorkerNode
+            async with _session_factory() as db:
+                dead = (await db.execute(
+                    select(ServerNode.id).where(
+                        ServerNode.status.in_(("offline", "decommissioned"))
+                    )
+                )).all()
+                dead_ids = {row[0] for row in dead}
+                if not dead_ids:
+                    return
+                names = (await db.execute(
+                    select(WorkerNode.name).where(WorkerNode.server_id.in_(dead_ids))
+                )).all()
+        except Exception:
+            return
+        moved = 0
+        for (wname,) in names:
+            if wname in live:
+                continue
+            qk = f"arq:q:{wname}"
+            try:
+                t = await r.type(qk)
+                t = t.decode() if isinstance(t, bytes) else t
+                if t != "zset":
+                    continue
+                jobs = await r.zrangebyscore(qk, min="-inf", max="+inf", withscores=True)
+                for job_id, score in jobs:
+                    pipe = r.pipeline(transaction=True)
+                    pipe.zrem(qk, job_id)
+                    pipe.zadd(FALLBACK_QUEUE, {job_id: score})
+                    await pipe.execute()
+                    moved += 1
+            except Exception:
+                continue
+        if moved:
+            await r.hincrby(STATS_KEY, "rescued_from_dead_server", moved)
 
 
 # ---------------------------------------------------------------------------

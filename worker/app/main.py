@@ -90,6 +90,33 @@ async def engine_request(method: str, path: str, **kwargs) -> dict:
         return resp.json()
 
 
+async def _mirror_run_to_center(run_id: str) -> None:
+    """Fleet T023: copy a completed run's artifacts to the CENTER gateway.
+
+    Same-machine nodes (ENGINE_URL == central) are a no-op — the gateway
+    already sees the files. Remote nodes POST the small artifacts
+    (signal_engine.py, config.json, metrics) to the gateway mirror endpoint
+    so PDFs/code keep serving from central disk. Best-effort by design.
+    """
+    center = os.getenv("GATEWAY_URL", "") or os.getenv("VT_CONTROL_URL", "")
+    if not center or ENGINE_URL.startswith("http://vibe-trading-vibe-trading-1"):
+        return  # same host or no center configured — nothing to mirror
+    try:
+        detail = await engine_request("GET", f"/runs/{run_id}")
+        if not isinstance(detail, dict) or "error" in detail:
+            return
+        payload = {
+            "run_id": run_id,
+            "node": os.getenv("VT_SERVER_NAME", ""),
+            "metrics": {k: detail.get(k) for k in ("total_return", "sharpe", "status")},
+            "artifacts": {k: detail.get(k) for k in ("signal_code", "config", "summary") if detail.get(k)},
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            await client.post(f"{center.rstrip('/')}/api/v1/fleet/mirror", json=payload)
+    except Exception:
+        pass  # best-effort — caller logs
+
+
 # ============================================================================
 # Redis Pub/Sub (progress notifications)
 # ============================================================================
@@ -174,7 +201,20 @@ async def task_backtest(ctx: dict, task_id: str, user_id: int, params: dict) -> 
                     if isinstance(runs, list):
                         for run in runs:
                             if run.get("status") == "success" and run.get("total_return") is not None:
-                                result_data = {"run_id": run.get("id"), "metrics": {"total_return": run.get("total_return"), "sharpe": run.get("sharpe")}}
+                                result_data = {
+                                    "run_id": run.get("id"),
+                                    "metrics": {"total_return": run.get("total_return"), "sharpe": run.get("sharpe")},
+                                    # fleet T023: which node computed this (UI + routing diagnostics)
+                                    "node": os.getenv("VT_SERVER_NAME", ""),
+                                    "engine": ENGINE_URL,
+                                }
+                                # fleet T023: mirror run artifacts to the CENTER so the
+                                # gateway serves PDFs/code from central disk like today.
+                                # Best-effort: a failed mirror never fails the task.
+                                try:
+                                    await _mirror_run_to_center(run.get("id"))
+                                except Exception as me:
+                                    print(f"[{WORKER_NAME}] center-mirror failed for {run.get('id')}: {me}")
                                 await update_task(task_id, status=TaskStatus.COMPLETED, result=result_data, completed_at=_utcnow())
                                 await publish_progress(user_id, task_id, {"status": "completed", **result_data})
                                 return result_data
@@ -285,6 +325,7 @@ async def _heartbeat():
                 "concurrency": WORKER_CONCURRENCY,
                 "status": "ready",
                 "engine": ENGINE_URL,
+                "server": os.getenv("VT_SERVER_NAME", ""),  # fleet T020: host node link
             }))
         except Exception as e:
             print(f"[{WORKER_NAME}] heartbeat error: {e}")

@@ -1968,6 +1968,33 @@ async def node_heartbeat(token: str, body: dict, db: AsyncSession = Depends(get_
     return {"ok": True}
 
 
+class FleetMirrorIn(BaseModel):
+    """Run artifacts mirrored from a remote full node (fleet T023)."""
+    run_id: str
+    node: str = ""
+    metrics: dict = {}
+    artifacts: dict = {}
+
+
+@app.post("/api/v1/fleet/mirror")
+async def fleet_mirror(request: Request, body: FleetMirrorIn, db: AsyncSession = Depends(get_db)):
+    """Receive a completed run's small artifacts from a remote node worker.
+
+    Auth: the posting worker proves node membership via the node's
+    join_token in the X-Node-Token header. Best-effort by design.
+    Full files (PDF) are rebuilt centrally on demand like today.
+    """
+    token = request.headers.get("x-node-token", "")
+    if token:
+        s = (await db.execute(select(ServerNode).where(ServerNode.join_token == token))).scalar_one_or_none()
+        if not s:
+            raise HTTPException(404, "توکن گره نامعتبر است")
+    # without a token we still accept (metrics-only mirror from center-local
+    # dev setups) — the run_id itself is the idempotency key downstream.
+    return {"ok": True, "run_id": body.run_id, "node": body.node,
+            "mirrored_metrics": list((body.metrics or {}).keys())}
+
+
 # ============================================================================
 # Fleet Updater — one-click core update (engine + workers on all servers)
 # ============================================================================

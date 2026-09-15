@@ -25,7 +25,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import select, update
 
 from shared.config import get_settings
-from shared.models import EngineNode, WorkerNode, _utcnow
+from shared.models import EngineNode, ServerNode, WorkerNode, _utcnow
 
 log = logging.getLogger("fleet")
 
@@ -231,6 +231,14 @@ async def _worker_sync_loop():
                         row.last_seen_at = now
                         row.status = "ready"
                         row.info = info
+                        # fleet T020: link worker → host server when heartbeat carries it
+                        srv = (info or {}).get("server") if isinstance(info, dict) else None
+                        if srv:
+                            snode = (await db.execute(
+                                select(ServerNode).where(ServerNode.name == srv)
+                            )).scalar_one_or_none()
+                            if snode:
+                                row.server_id = snode.id
                     else:
                         db.add(WorkerNode(name=name, last_seen_at=now, status="ready", info=info))
                 # mark workers silent > 3 min as gone
@@ -240,6 +248,25 @@ async def _worker_sync_loop():
                         row.last_seen_at is None or row.last_seen_at.timestamp() < cutoff
                     ):
                         row.status = "gone"
+                # fleet T022: mirror each ONLINE full-node server as an engine node
+                # (local engine on that server) so EnginePool routes across them
+                servers = (await db.execute(
+                    select(ServerNode).where(ServerNode.status == "online")
+                )).scalars().all()
+                for s in servers:
+                    if not s.engine_url_local:
+                        continue
+                    en = (await db.execute(
+                        select(EngineNode).where(EngineNode.name == f"node-{s.name}")
+                    )).scalar_one_or_none()
+                    if en:
+                        en.url = s.engine_url_local
+                        en.is_enabled = True
+                    else:
+                        db.add(EngineNode(
+                            name=f"node-{s.name}", url=s.engine_url_local,
+                            api_key=None, is_enabled=True, is_healthy=True,
+                        ))
                 await db.commit()
         except Exception as exc:
             log.error("worker sync loop error: %s", exc)
