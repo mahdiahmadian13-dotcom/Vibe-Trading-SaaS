@@ -160,8 +160,8 @@
 
 **Independent Test**: آپدیت ۲ گره با تسک در حال اجرا → هیچ گم‌شدگی، هر دو روی نسخه جدید (quickstart §۵).
 
-- [ ] T042 [US11] توسعه `FleetUpdate` با وضعیت per-node در `shared/models.py` + منطق rollout در `updater/` (drain→update→health→back، توقف با شکست + rollback به نسخه قبلی)
-- [ ] T043 [US11] UI آپدیت در `webapp/src/pages/AdminPage.tsx` (دکمه «به‌روزرسانی ناوگان» + پیش‌نمایش تغییرات + لغو + پیشرفت per-node) + راوت‌ها در `gateway/app/main.py` (`POST /api/v1/admin/fleet/updates`, `DELETE .../{id}`)
+- [X] T042 [US11] توسعه `FleetUpdate` با وضعیت per-node در `shared/models.py` + منطق rollout در `updater/` (drain→update→health→back، توقف با شکست + rollback به نسخه قبلی)
+- [X] T043 [US11] UI آپدیت در `webapp/src/pages/AdminPage.tsx` (دکمه «به‌روزرسانی ناوگان» + پیش‌نمایش تغییرات + لغو + پیشرفت per-node) + راوت‌ها در `gateway/app/main.py` (`POST /api/v1/admin/fleet/updates`, `DELETE .../{id}`)
 - [ ] T044 [US11] E2E آپدیت طبق quickstart §۵
 
 ---
