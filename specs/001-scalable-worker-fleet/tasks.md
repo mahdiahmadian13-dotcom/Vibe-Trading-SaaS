@@ -69,11 +69,11 @@
 
 **Independent Test**: ۱۰ تسک هم‌زمان → همه به نتیجه، بدون گم‌شدگی/تکرار، بار پخش‌شده بین گره‌ها (quickstart §۲).
 
-- [ ] T020 [P] [US2] آگاهی از سرور در `gateway/app/dispatch.py` (نگاشت `worker→server` از `worker_nodes`، محرومیت ورکرهای گره draining/offline از انتخاب)
-- [ ] T021 [US2] نجات سطح سرور در `gateway/app/dispatch.py` تابع `_reap_tick` (تشخیص مرگ کل سرور از heartbeat + انتقال گروهی صف‌هایش به fallback، حفظ اولویت پلن) (وابسته به T020)
-- [ ] T022 [US2] مسیریابی به انجین همان گره در `gateway/app/fleet.py` (`EnginePool`: هر گره کامل یک ردیف انجین، failover سالم‌اول) (وابسته به T021)
-- [ ] T023 [US2] برگرداندن خروجی به مرکز در `worker/app/main.py` (پس از اتمام تسک: آپلود فایل‌های `signal_engine.py`/`config.json`/متریک به گیت‌وی مرکزی؛ گره stateless می‌ماند)
-- [ ] T024 [US2] تست kill وسط اجرا طبق quickstart §۲ (مدرک: دقیقاً یک نتیجه برای کاربر + پیام تلگرام مدیر)
+- [X] T020 [P] [US2] آگاهی از سرور در `gateway/app/dispatch.py` (نگاشت `worker→server` از `worker_nodes`، محرومیت ورکرهای گره draining/offline از انتخاب)
+- [X] T021 [US2] نجات سطح سرور در `gateway/app/dispatch.py` تابع `_reap_tick` (تشخیص مرگ کل سرور از heartbeat + انتقال گروهی صف‌هایش به fallback، حفظ اولویت پلن) (وابسته به T020)
+- [X] T022 [US2] مسیریابی به انجین همان گره در `gateway/app/fleet.py` (`EnginePool`: هر گره کامل یک ردیف انجین، failover سالم‌اول) (وابسته به T021)
+- [X] T023 [US2] برگرداندن خروجی به مرکز در `worker/app/main.py` (پس از اتمام تسک: آپلود فایل‌های `signal_engine.py`/`config.json`/متریک به گیت‌وی مرکزی؛ گره stateless می‌ماند)
+- [X] T024 [US2] تست kill وسط اجرا طبق quickstart §۲ (مدرک: دقیقاً یک نتیجه برای کاربر + پیام تلگرام مدیر)
 
 **Checkpoint**: US1+US2+US3+US9+US10 مسیر اصلی «ثبت→توزیع→نتیجه» را کامل می‌کنند.
 
