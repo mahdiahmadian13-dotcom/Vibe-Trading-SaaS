@@ -110,6 +110,24 @@ export const retryProvision = (serverId: number) =>
   api<{ ok: boolean; status: string; current_step: string | null }>(
     `/api/v1/admin/fleet/servers/${serverId}/provision/retry`, { method: "POST" });
 
+// ---------------------------------------------------------------------------
+// Fleet metrics (live dashboard — US10, FR-022)
+// ---------------------------------------------------------------------------
+
+export type FleetLive = {
+  ts: string;
+  fleet: { load: number; queue: number; workers: number; tasks_running: number };
+  servers: Array<{ id: number; name: string; status: string; load: number; queue: number; workers: number; engine_healthy: boolean; capability_warning: boolean }>;
+  central_load: number;
+  tasks_live: Array<{ task_id: string; type: string; status: string | null; worker: string | null; server: string; elapsed_s: number | null }>;
+};
+
+export const getFleetLive = () => api<FleetLive>("/api/v1/admin/fleet/metrics/live");
+
+export const getFleetHistory = (serverId: number, metric = "load", hours = 72) =>
+  api<{ server_id: number; metric: string; hours: number; points: Array<[string, number]> }>(
+    `/api/v1/admin/fleet/metrics/history?server_id=${serverId}&metric=${metric}&hours=${hours}`);
+
 
 // ---------------------------------------------------------------------------
 // Fleet update (one-click engine core update + worker rollout)

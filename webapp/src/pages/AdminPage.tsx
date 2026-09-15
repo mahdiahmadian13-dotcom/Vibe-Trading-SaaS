@@ -8,6 +8,7 @@
   import type { AdminOverview, AdminUserRow, EngineRow, MonitorSummary, ServerRow } from "@/api/admin";
   import { Button } from "@/components/ui/Button";
   import { Card } from "@/components/ui/primitives";
+  import { FleetCards, LoadChart, TasksBar, DistDonut, HealthMap, LiveTasks } from "@/components/fleet/widgets";
 
   // ---------------------------------------------------------------------------
   // Small helpers
@@ -976,11 +977,60 @@ docker compose -f docker-compose.worker.yml up -d --build`;
   // Live
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // US10 dashboard widgets wrapper (recharts) — defined in components/fleet
+  // ---------------------------------------------------------------------------
+  function FleetWidgets({ fleet, loadPts, data }: {
+    fleet: import("@/api/admin").FleetLive;
+    loadPts: Array<{ t: string; v: number }>;
+    data: import("@/api/admin").MonitorFull;
+  }) {
+    return (
+      <>
+        <Card className="p-4">
+          <FleetCards fleet={fleet.fleet} />
+        </Card>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card className="p-4">
+            <div className="mb-2 text-xs font-extrabold">بار زنده ناوگان (هر ۵ ثانیه)</div>
+            <LoadChart points={loadPts.length ? loadPts : [{ t: fleet.ts, v: fleet.fleet.load }]} />
+          </Card>
+          <Card className="p-4">
+            <div className="mb-2 text-xs font-extrabold">توزیع بار بین گره‌ها</div>
+            <DistDonut slices={fleet.servers.map((s) => ({ name: s.name, value: s.load }))} />
+          </Card>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card className="p-4">
+            <div className="mb-2 text-xs font-extrabold">تسک‌ها (۱ ساعت اخیر)</div>
+            <TasksBar ok={data.tasks_1h - data.failed_1h} fail={data.failed_1h} pending={fleet.fleet.queue} />
+          </Card>
+          <Card className="p-4">
+            <div className="mb-2 text-xs font-extrabold">نقشه سلامت گره‌ها</div>
+            <HealthMap servers={fleet.servers} />
+          </Card>
+        </div>
+        <Card className="p-4">
+          <div className="mb-2 text-xs font-extrabold">تسک‌های زنده ({fleet.tasks_live.length})</div>
+          <LiveTasks tasks={fleet.tasks_live} />
+        </Card>
+      </>
+    );
+  }
+
   function LiveTab() {
     const [data, setData] = useState<import("@/api/admin").MonitorFull | null>(null);
+    const [fleet, setFleet] = useState<import("@/api/admin").FleetLive | null>(null);
+    const [loadPts, setLoadPts] = useState<Array<{ t: string; v: number }>>([]);
     const [err, setErr] = useState("");
     const timer = useRef<number | null>(null);
-    const load = useCallback(() => adminApi.getMonitorFull().then(setData).catch((e: Error) => setErr(e.message)), []);
+    const load = useCallback(() => {
+      adminApi.getMonitorFull().then(setData).catch((e: Error) => setErr(e.message));
+      adminApi.getFleetLive().then((f) => {
+        setFleet(f);
+        setLoadPts((prev) => [...prev.slice(-119), { t: f.ts, v: f.fleet.load }]);
+      }).catch(() => {});
+    }, []);
     useEffect(() => { load(); timer.current = window.setInterval(load, 5000); return () => { if (timer.current) clearInterval(timer.current); }; }, [load]);
 
     if (err) return <Card className="p-6 text-sm text-red-300">{err}</Card>;
@@ -989,6 +1039,8 @@ docker compose -f docker-compose.worker.yml up -d --build`;
     const failRate = data.tasks_1h ? Math.round(data.failed_1h * 100 / data.tasks_1h) : 0;
     return (
       <div className="space-y-4">
+        {/* US10: fleet charts (recharts) — live load + distribution + health + live tasks */}
+        {fleet && <FleetWidgets fleet={fleet} loadPts={loadPts} data={data} />}
         {/* KPI row */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
           <Card className="p-4"><div className="text-[11px] font-bold text-muted">تسک یک ساعت اخیر</div><div className="mt-1 text-xl font-black">{data.tasks_1h}</div></Card>

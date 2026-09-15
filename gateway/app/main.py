@@ -1164,6 +1164,79 @@ async def admin_monitor_full(
     }
 
 
+@app.get("/api/v1/admin/fleet/metrics/live")
+async def admin_fleet_live(admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """US10 T028: live snapshot for 5s dashboard polling (cheap: Redis + light DB).
+
+    Returns fleet totals + per-server load/queue/workers + live running tasks.
+    """
+    import redis.asyncio as _redis
+    now = _utcnow()
+    servers = (await db.execute(select(ServerNode).order_by(ServerNode.id))).scalars().all()
+    live_tasks = (await db.execute(
+        select(Task).where(Task.status.in_((TaskStatus.RUNNING, TaskStatus.PENDING))).order_by(Task.created_at.desc()).limit(30)
+    )).scalars().all()
+    # queue+inflight per worker from Redis
+    qmap: dict[str, int] = {}
+    try:
+        r = _redis.from_url(get_settings().REDIS_URL, decode_responses=True)
+        from app.dispatch import INFLIGHT_PREFIX
+        for qk in await r.keys("arq:q:*"):
+            qk_s = qk.decode() if isinstance(qk, bytes) else qk
+            if ":" in qk_s.split("arq:q:", 1)[1]:
+                continue
+            wname = qk_s.split("arq:q:", 1)[1]
+            try:
+                qmap[wname] = int(await r.zcard(qk_s)) + int(await r.hlen(INFLIGHT_PREFIX + wname))
+            except Exception:
+                qmap[wname] = 0
+        await r.aclose()
+    except Exception:
+        pass
+    # worker → server map
+    wrows = (await db.execute(select(WorkerNode))).scalars().all()
+    wserver = {w.name: w.server_id for w in wrows}
+    sid_name = {s.id: s.name for s in servers}
+    out_servers = []
+    for s in servers:
+        loads = [qmap.get(w.name, 0) for w in wrows if w.server_id == s.id or w.name.startswith(s.name + "-")]
+        out_servers.append({
+            "id": s.id, "name": s.name, "status": s.status,
+            "load": sum(loads), "queue": sum(loads),
+            "workers": len([w for w in wrows if w.server_id == s.id]),
+            "engine_healthy": s.engine_healthy, "capability_warning": s.capability_warning,
+        })
+    # central (workers with no server)
+    central_load = sum(v for k, v in qmap.items() if k not in wserver or not wserver.get(k))
+    tasks_live = [{
+        "task_id": t.task_id[:8], "type": t.task_type,
+        "status": t.status.value if t.status else None,
+        "worker": t.worker_name,
+        "server": sid_name.get(wserver.get(t.worker_name or ""), "central") if t.worker_name else "central",
+        "elapsed_s": round((now - (t.started_at or t.created_at)).total_seconds()) if (t.started_at or t.created_at) else None,
+    } for t in live_tasks]
+    return {
+        "ts": now.isoformat(),
+        "fleet": {"load": sum(qmap.values()), "queue": sum(qmap.values()),
+                  "workers": len(wrows), "tasks_running": sum(1 for t in live_tasks if t.status == TaskStatus.RUNNING)},
+        "servers": out_servers,
+        "central_load": central_load,
+        "tasks_live": tasks_live,
+    }
+
+
+@app.get("/api/v1/admin/fleet/metrics/history")
+async def admin_fleet_history(server_id: int, metric: str = "load",
+                              hours: int = 72,
+                              admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)):
+    """US10 T028: downsampled history (≤ ~500 points) for charts + mobile."""
+    from datetime import timedelta as _td
+    from app import metrics as metrics_mod
+    now = _utcnow()
+    pts = await metrics_mod.history(db, server_id, metric, now - _td(hours=hours), now, max_points=500)
+    return {"server_id": server_id, "metric": metric, "hours": hours, "points": pts}
+
+
 # ============================================================================
 # Admin — Users (full CRUD + audit)
 # ============================================================================
