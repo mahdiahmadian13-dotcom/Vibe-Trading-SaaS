@@ -12,3 +12,7 @@ coverage.xml
 *.db
 *.sqlite3
 webapp/tsconfig.tsbuildinfo
+node_modules/
+webapp/node_modules/
+package-lock.json
+webapp/package-lock.json
