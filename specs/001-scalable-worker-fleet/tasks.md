@@ -172,9 +172,9 @@
 
 **Independent Test**: نقش «فقط‌مشاهده» → هیچ دکمه عملیاتی + `403` روی فراخوانی مستقیم نصب (quickstart §۶).
 
-- [ ] T045 [P] [US12] CRUD نقش‌ها در `gateway/app/main.py` (`GET/POST/PATCH/DELETE /api/v1/admin/roles` + اتصال کاربر→نقش) با نقش لازم `users`
-- [ ] T046 [US12] UI نقش‌ها در `webapp/src/pages/AdminPage.tsx` (لیست نقش‌ها + چک‌باکس دسترسی‌ها + مخفی‌سازی دکمه‌ها بر اساس نقش جاری) (وابسته به T045)
-- [ ] T047 [US12] E2E نقش طبق quickstart §۶ (مدرک 403 + اسکرین‌شات UI بدون دکمه)
+- [X] T045 [P] [US12] CRUD نقش‌ها در `gateway/app/main.py` (`GET/POST/PATCH/DELETE /api/v1/admin/roles` + اتصال کاربر→نقش) با نقش لازم `users`
+- [X] T046 [US12] UI نقش‌ها در `webapp/src/pages/AdminPage.tsx` (لیست نقش‌ها + چک‌باکس دسترسی‌ها + مخفی‌سازی دکمه‌ها بر اساس نقش جاری) (وابسته به T045)
+- [X] T047 [US12] E2E نقش طبق quickstart §۶ (مدرک 403 + اسکرین‌شات UI بدون دکمه)
 
 ---
 
