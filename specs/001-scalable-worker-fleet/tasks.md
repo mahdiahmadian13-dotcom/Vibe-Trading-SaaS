@@ -149,7 +149,7 @@
 **Independent Test**: اسکن بیرونی بسته + کارکرد از IP خصوصی (quickstart §۸)؛ قطع/وصل اینترفیس → انتقال + پیام + بازگشت (quickstart §۷).
 
 - [X] T039 [P] [US8] بستن پورت‌ها روی compose مرکزی در `docker-compose.yml` (حذف publish عمومی `6379/5432/8899`؛ فقط `127.0.0.1` یا شبکه خصوصی) + مستندسازی Tailscale در `README.md`
-- [ ] T040 [US13] تشخیص قطعی شبکه در `gateway/app/fleet.py` حلقه سلامت (افت heartbeat → `degraded` → drain خودکار + انتقال تسک + پیام تلگرام به مدیر + تلاش دوره‌ای؛ وصل شدن → تست سلامت → `online`)
+- [X] T040 [US13] تشخیص قطعی شبکه در `gateway/app/fleet.py` حلقه سلامت (افت heartbeat → `degraded` → drain خودکار + انتقال تسک + پیام تلگرام به مدیر + تلاش دوره‌ای؛ وصل شدن → تست سلامت → `online`)
 - [X] T041 [US8+US13] E2E امنیتی-شبکه طبق quickstart §۷ و §۸ (`nmap` بیرونی + `redis-cli` از IP خصوصی + قطع/وصل Tailscale)
 
 ---
