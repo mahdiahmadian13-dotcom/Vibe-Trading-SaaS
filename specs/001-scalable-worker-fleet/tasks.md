@@ -162,7 +162,7 @@
 
 - [X] T042 [US11] توسعه `FleetUpdate` با وضعیت per-node در `shared/models.py` + منطق rollout در `updater/` (drain→update→health→back، توقف با شکست + rollback به نسخه قبلی)
 - [X] T043 [US11] UI آپدیت در `webapp/src/pages/AdminPage.tsx` (دکمه «به‌روزرسانی ناوگان» + پیش‌نمایش تغییرات + لغو + پیشرفت per-node) + راوت‌ها در `gateway/app/main.py` (`POST /api/v1/admin/fleet/updates`, `DELETE .../{id}`)
-- [ ] T044 [US11] E2E آپدیت طبق quickstart §۵
+- [X] T044 [US11] E2E آپدیت طبق quickstart §۵
 
 ---
 
@@ -197,7 +197,7 @@
 - [X] T051 [P] پاک‌سازی ۳۰ روزه در `gateway/app/retention.py` (job روزانه: حذف فایل‌های >۳۰ روز + اطلاع کاربر + حفظ متریک خلاصه) + E2E quickstart §۹
 - [X] T052 [P] فارسی‌سازی و RTL نهایی همه متن‌های جدید وب‌اپ + تست موبایل WebView (تلگرام) برای تب‌های نودها/داشبورد
 - [X] T053 [P] به‌روزرسانی `README.md` + `ARCHITECTURE.md` (نقشه ناوگان، Tailscale، سقف‌ها، کوپن) — بدون سکرت
-- [ ] T054 اجرای کامل `specs/001-scalable-worker-fleet/quickstart.md` (§۱ تا §۹) روی سرور واقعی + ثبت مدارک + کامیت/push نهایی
+- [X] T054 اجرای کامل `specs/001-scalable-worker-fleet/quickstart.md` (§۱ تا §۹) روی سرور واقعی + ثبت مدارک + کامیت/push نهایی
 - [X] T055 بازبینی امنیتی نهایی: `grep` عدم plaintext سکرت (`ssh_password`, `PRIVATE KEY`) در لاگ/پاسخ‌ها + تأیید 403 نقش‌ها + تأیید بسته بودن پورت‌ها
 
 ---
