@@ -11,7 +11,7 @@
 - **Decision**: کتابخانه `asyncssh` (async-native) برای اتصال‌های نصب؛ اجرای هر نصب به‌صورت job پس‌زمینه (asyncio Task + جدول وضعیت در Postgres)، نه داخل ریکوئست.
 - **Rationale**: گیت‌وی کاملاً async است (FastAPI + httpx + aioredis)؛ `paramiko`/`fabric` سینک‌اند و در event-loop بلوکه می‌کنند. `asyncssh` هم password و هم key را native پشتیبانی می‌کند و با `asyncio` همان حلقه گیت‌وی کار می‌کند.
 - **Alternatives considered**: paramiko در threadpool (کار می‌کند ولی مدیریت timeout/concurrency سخت‌تر)؛ agentless مثل Ansible (وابستگی سنگین جدید برای چند دستور داکر/کامپوز).
-- **Key gotcha**: اعتبارسنجی host-key در اولین اتصال — اثر انگشت در اولین نصب نمایش/ثبت و بعد پین می‌شود (نه `known_hosts=accept` کور). timeout هر مرحله جدا + لاگ خط‌به‌خط فارسی.
+- **Key gotcha**: اعتبارسنجی host-key در اولین اتصال — اثر انگشت در اولین نصب نمایش/ثبت و بعد پین می‌شود (نه `known_hosts=accept` کور). timeout هر مرحله جدا + لاگ خط‌به‌خط فارسی. نصب‌های هم‌زمان با سمافور (~۱۰ اتصال) + تایم‌اوت per-connection تا FD خفه نشود.
 
 ## R2 — نگهداری رمز/کلید SSH در مرکز
 
@@ -25,7 +25,7 @@
 - **Decision**: `recharts` برای نمودارها (خطی/میله‌ای/دایره‌ای) + SVG دستی برای «نقشه سلامت گره‌ها» + `Intl.NumberFormat('fa-IR')` برای اعداد فارسی.
 - **Rationale**: استک فعلی React + Tailwind + framer-motion است و هیچ کتابخانه نموداری نصب نیست؛ recharts کامپوننتی و React-native است (سریع‌ترین entegration)، برای RTL با `direction: rtl` و محور معکوس جواب می‌دهد؛ نقشه سلامت گره‌ها نمودار آماده ندارد و با SVG سبک تمیزتر درمی‌آید.
 - **Alternatives considered**: lightweight-charts (سریع‌تر ولی imperative/غیر-React و فارسی‌سازیش بیشتر کار دارد)؛ SVG کاملاً دستی (برای ۴ نمودار + تاریخچه، هزینه ساخت و نگهداری بالا).
-- **Key gotcha**: polling هر ۵ ثانیه فقط داده خام را می‌آورد؛ انیمیشن نمودار باید throttle شود (در غیر این صورت با هر tick کل چارت re-render و پرش دارد)؛ تاریخچه چندروزه از endpoint جدا (downsample شده) نه از همان endpoint زنده.
+- **Key gotcha**: polling هر ۵ ثانیه فقط داده خام را می‌آورد؛ `isAnimationActive={false}` روی سری‌های زنده + رینگ‌بافر کلاینت (۶۰–۱۲۰ نقطه آخر) + memoize آرایه‌ها (وگرنه هر tick کل چارت re-render و پرش دارد)؛ نسخه major پین شود (drift بین v2 و v3)؛ تاریخچه چندروزه از endpoint جدا (downsample شده) نه از همان endpoint زنده.
 
 ## R4 — حلقه مقیاس خودکار ورکرها
 
@@ -39,7 +39,7 @@
 - **Decision**: دو لایه — Redis برای «زنده» (آخرین نمونه هر گره، TTL کوتاه) + Postgres (`fleet_metrics`) برای تاریخچه با rollup دقیقه‌ای؛ خام ۵ ثانیه‌ای فقط ۲۴ ساعت نگه داشته می‌شود.
 - **Rationale**: برآورد حجم: ۱۷٬۲۸۰ نمونه/روز به‌ازای هر متریک هر گره با گام ۵ ثانیه؛ با ۶ متریک و rollup دقیقه‌ای برای تاریخچه چندروزه، چندصد هزار ردیف می‌شود — برای Postgres با ایندکس (server, ts) و purge روزانه کاملاً عادی است؛ Redis Timeseries ماژول اضافه می‌خواهد و لازم نیست.
 - **Alternatives considered**: نگه‌داشتن همه خام ۵ ثانیه‌ای برای همیشه (رشد بیهوده جدول)؛ Prometheus (سرویس جدید برای داشبوردی که recharts + Postgres جواب می‌دهد).
-- **Key gotcha**: job روزانه purge (همراه retention فایل ۳۰ روزه)؛ endpoint تاریخچه همیشه downsample برمی‌گرداند (حداکثر ~۵۰۰ نقطه) تا موبایل خفه نشود.
+- **Key gotcha**: job روزانه purge (همراه retention فایل ۳۰ روزه)؛ endpoint تاریخچه همیشه downsample برمی‌گرداند (حداکثر ~۵۰۰ نقطه) تا موبایل خفه نشود. برآورد حجم: ~۱۱۰ بایت/ردیف → ~۱۷هزار ردیف/روز/گره ≈ ‏۲ مگابایت/روز/گره (۱۰ گره × ۷ روز ≈ ۱۳۰ مگ)؛ هرگز one-row-per-metric (۵ برابر حجم)؛ خام ۵ ثانیه‌ای فقط ۲۴–۴۸ ساعت، بعد rollup دقیقه‌ای.
 
 ## R6 — انجین محلی روی گره (گره کامل)
 
