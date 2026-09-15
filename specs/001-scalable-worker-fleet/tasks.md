@@ -184,9 +184,9 @@
 
 **Independent Test**: اعداد پنل با واقعیت بخوانند؛ سرور ضعیف هشدار بگیرد.
 
-- [ ] T048 [P] [US7] تست توان در `agent/app/main.py` (جمع‌آوری CPU/RAM/دیسک/docker/latency در اولین heartbeat + ارسال در `host_info`) + نمایش verdict در `gateway/app/main.py` (`GET /servers/{id}` شامل `capability` + `capability_warning`)
-- [ ] T049 [P] [US5] کارت‌های بار/صف به‌تفکیک ورکر در تب نودها (`webapp/src/pages/AdminPage.tsx`، تغذیه از `metrics/live`) — مکمل داشبورد US10
-- [ ] T050 [P] [US5+US7] مقیاس خودکار در `gateway/app/autoscale.py` (حلقه ۶۰ ثانیه‌ای: `want=ceil(queue/TARGET)` داخل `[min,max]` + hysteresis + cooldown؛ override دستی همیشه مقدم) + سیم‌کشی به `desired_workers`
+- [X] T048 [P] [US7] تست توان در `agent/app/main.py` (جمع‌آوری CPU/RAM/دیسک/docker/latency در اولین heartbeat + ارسال در `host_info`) + نمایش verdict در `gateway/app/main.py` (`GET /servers/{id}` شامل `capability` + `capability_warning`)
+- [X] T049 [P] [US5] کارت‌های بار/صف به‌تفکیک ورکر در تب نودها (`webapp/src/pages/AdminPage.tsx`، تغذیه از `metrics/live`) — مکمل داشبورد US10
+- [X] T050 [P] [US5+US7] مقیاس خودکار در `gateway/app/autoscale.py` (حلقه ۶۰ ثانیه‌ای: `want=ceil(queue/TARGET)` داخل `[min,max]` + hysteresis + cooldown؛ override دستی همیشه مقدم) + سیم‌کشی به `desired_workers`
 
 ---
 
