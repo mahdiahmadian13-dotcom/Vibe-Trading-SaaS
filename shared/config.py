@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     TELEGRAM_ALLOWED_USERS: str = ""  # comma-separated user IDs
     TELEGRAM_BOT_USERNAME: str = ""  # without @ — for referral deep-links
     TELEGRAM_CHANNEL_URL: str = ""   # e.g. https://t.me/yourchannel
+    FLEET_ALERT_TG_IDS: str = ""     # US13 T040: comma-separated Telegram user IDs for server down/up alerts
 
     # --- Fleet (multi-server) ---
     FLEET_HEALTH_INTERVAL: int = 30

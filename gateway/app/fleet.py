@@ -276,8 +276,87 @@ async def _worker_sync_loop():
 _bg_tasks: list[asyncio.Task] = []
 
 
+async def _tg_alert(text: str) -> None:
+    """US13 T040: best-effort Telegram alert to FLEET_ALERT_TG_IDS.
+
+    Never raises — a dead Telegram must not break the health loop.
+    """
+    settings = get_settings()
+    token = (settings.TELEGRAM_BOT_TOKEN or "").strip()
+    ids = [x.strip() for x in (settings.FLEET_ALERT_TG_IDS or "").split(",") if x.strip()]
+    if not token or not ids:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for chat_id in ids:
+                try:
+                    await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                    )
+                except Exception as exc:
+                    log.warning("fleet tg alert to %s failed: %s", chat_id, exc)
+    except Exception as exc:
+        log.warning("fleet tg alert failed: %s", exc)
+
+
+async def _server_watchdog_loop():
+    """US13 T040: per-server heartbeat watchdog.
+
+    online/degraded server silent too long → degraded → offline + auto-drain
+    (dispatcher already excludes draining/offline, and the reaper moves its
+    queued tasks to fallback). On recovery → back online with TG notice.
+    Thresholds: degraded after 2 missed beats, offline after 4 (≈2×/4× the
+    agent heartbeat interval).
+    """
+    from shared.models import _session_factory
+    BEAT = 30          # agent heartbeat period (seconds)
+    DEGRADE_AFTER = 60   # 2 missed beats
+    OFFLINE_AFTER = 120  # 4 missed beats
+    while True:
+        try:
+            async with _session_factory() as db:
+                now = _utcnow()
+                servers = (await db.execute(select(ServerNode))).scalars().all()
+                for s in servers:
+                    if s.status in ("pending", "decommissioned"):
+                        continue
+                    if not s.last_heartbeat_at:
+                        continue
+                    silent = (now - s.last_heartbeat_at).total_seconds()
+                    if s.status in ("online", "degraded") and silent > OFFLINE_AFTER:
+                        s.status = "offline"
+                        await db.commit()
+                        log.warning("server %s OFFLINE (silent %.0fs) — auto-drained", s.name, silent)
+                        await _tg_alert(
+                            f"🔴 سرور <b>{s.name}</b> قطع شد (heartbeat قطع شده، ~{int(silent)} ثانیه).\n"
+                            f"ورکرها تخلیه و تسک‌های صف به fallback منتقل می‌شوند."
+                        )
+                    elif s.status == "online" and silent > DEGRADE_AFTER:
+                        s.status = "degraded"
+                        await db.commit()
+                        log.warning("server %s degraded (silent %.0fs)", s.name, silent)
+                    elif s.status in ("offline", "degraded") and silent <= DEGRADE_AFTER:
+                        s.status = "online"
+                        await db.commit()
+                        log.warning("server %s RECOVERED — back online", s.name)
+                        await _tg_alert(f"🟢 سرور <b>{s.name}</b> وصل شد و به چرخه برگشت.")
+                # prune mirror engine rows for servers no longer online
+                live_names = {s.name for s in servers if s.status == "online"}
+                for en in (await db.execute(
+                    select(EngineNode).where(EngineNode.name.like("node-%"))
+                )).scalars().all():
+                    short = en.name[len("node-"):]
+                    if short not in live_names and en.is_enabled:
+                        en.is_enabled = False
+                await db.commit()
+        except Exception as exc:
+            log.error("server watchdog loop error: %s", exc)
+        await asyncio.sleep(30)
+
+
 def start_background_loops():
-    for coro in (_health_loop(), _worker_sync_loop()):
+    for coro in (_health_loop(), _worker_sync_loop(), _server_watchdog_loop()):
         t = asyncio.get_event_loop().create_task(coro)
         _bg_tasks.append(t)
 
