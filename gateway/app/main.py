@@ -1905,11 +1905,19 @@ class ServerNodeIn(BaseModel):
 
 
 class ServerProvisionIn(BaseModel):
-    """Register a server + auto-provision it over SSH (US-09, FR-020)."""
+    """Register a server + auto-provision it over SSH (US-09, FR-020).
+
+    auth_type:
+      - password | key: classic SSH host + credential
+      - freestyle: Freestyle cloud VM — ssh_host carries the VM id (the
+        whole `npx freestyle vm ssh ...` line may be pasted); the gateway
+        drives the VM through the freestyle CLI (FREESTYLE_API_KEY +
+        FREESTYLE_TEAM env), no SSH credential needed (secret optional).
+    """
     name: str
     ssh_host: str
     ssh_user: str = "root"
-    auth_type: str = "password"  # password | key
+    auth_type: str = "password"  # password | key | freestyle
     ssh_password: str | None = None
     ssh_key: str | None = None
     tailscale_ip: str | None = None
@@ -1926,9 +1934,14 @@ async def admin_provision_server(req: ServerProvisionIn, admin: User = Depends(_
     runs as a background job; poll GET .../provision for live progress.
     """
     from shared.models import ProvisionJob as _ProvisionJob
-    if req.auth_type not in ("password", "key"):
+    if req.auth_type not in ("password", "key", "freestyle"):
         raise HTTPException(400, "نوع احراز نامعتبر است")
-    secret_plain = req.ssh_password if req.auth_type == "password" else req.ssh_key
+    if req.auth_type == "freestyle":
+        # Freestyle VM: the "secret" is optional; a placeholder is stored so the
+        # NOT NULL constraint holds. The transport is the freestyle CLI.
+        secret_plain = (req.ssh_password or req.ssh_key or "freestyle-cli").strip() or "freestyle-cli"
+    else:
+        secret_plain = req.ssh_password if req.auth_type == "password" else req.ssh_key
     if not secret_plain:
         raise HTTPException(400, "رمز عبور یا کلید خصوصی لازم است")
     if (await db.execute(select(ServerNode).where(ServerNode.name == req.name))).scalar_one_or_none():

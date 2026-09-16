@@ -96,7 +96,7 @@ export const scaleServer = (id: number, body: { desired_workers: number; worker_
 export type ProvisionStep = { step: string; ts: string; ok: boolean | null; msg_fa: string };
 
 export const provisionServer = (body: {
-  name: string; ssh_host: string; ssh_user?: string; auth_type: "password" | "key";
+  name: string; ssh_host: string; ssh_user?: string; auth_type: "password" | "key" | "freestyle";
   ssh_password?: string | null; ssh_key?: string | null; tailscale_ip?: string | null;
   region?: string | null; min_workers?: number; max_workers?: number;
 }) => api<{ id: number; provision_job_id: number; status: string; current_step: string }>(

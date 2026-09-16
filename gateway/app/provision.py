@@ -12,6 +12,7 @@ Retry resumes from the first failed step (successful steps are skipped).
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import datetime, timezone
 
@@ -53,7 +54,12 @@ class ProvisionError(Exception):
 # ---------------------------------------------------------------------------
 
 async def _connect(server: ServerNode):
-    """Open an asyncssh connection. Plaintext lives only in this scope."""
+    """Open a transport. For freestyle VMs this is a CLI-based fake conn;
+    otherwise an asyncssh connection. Plaintext lives only in this scope."""
+    if (server.ssh_auth_type or "") == "freestyle":
+        from app.provision_freestyle import FreestyleConn, parse_vm_id
+        return FreestyleConn(parse_vm_id(server.ssh_host or ""))
+
     import asyncssh
 
     secret = decrypt_secret(server.ssh_secret, server.id)
@@ -108,6 +114,16 @@ async def _step_net(server: ServerNode, conn) -> None:
     # private-net check: the control plane must be reachable on its Tailscale/VPN IP
     rc, out = await _run(conn, "which tailscale && tailscale status | head -3 || echo NO_TAILSCALE")
     if "NO_TAILSCALE" in out:
+        if getattr(conn, "kind", "") == "freestyle":
+            # Freestyle VMs are on Freestyle's cloud net, not the owner's tailnet.
+            # The engine talks to the CENTER via its public URL instead.
+            rc2, out2 = await _run(
+                conn,
+                f"curl -fsS --max-time 10 {os.getenv('PUBLIC_BASE_URL', '')}/health || echo NO_ROUTE",
+            )
+            if "NO_ROUTE" in out2 or rc2 != 0:
+                raise ProvisionError("سرور به مرکز دسترسی ندارد (health از طریق URL عمومی ناموفق)")
+            return  # public-URL routing OK — Tailscale not required
         raise ProvisionError("شبکه خصوصی (Tailscale) روی سرور فعال نیست — ابتدا آن را وصل کنید")
     if server.tailscale_ip:
         rc, out = await _run(conn, f"ping -c2 -W3 {server.tailscale_ip}")

@@ -3,8 +3,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# node+npx: freestyle VM provisioning drives the VMs via the freestyle CLI
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gcc && rm -rf /var/lib/apt/lists/*
+    curl gcc nodejs npm && rm -rf /var/lib/apt/lists/*
 
 COPY gateway/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt

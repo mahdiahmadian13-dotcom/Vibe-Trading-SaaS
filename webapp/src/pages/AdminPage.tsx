@@ -761,7 +761,7 @@ docker compose -f docker-compose.worker.yml up -d --build`;
   // in JoinServerModal below (kept for SSH-less servers).
   // ---------------------------------------------------------------------------
   function ProvisionModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-    const [f, setF] = useState({ name: "", ssh_host: "", ssh_user: "root", auth_type: "password" as "password" | "key", secret: "", tailscale_ip: "", region: "", min_workers: 1, max_workers: 4 });
+    const [f, setF] = useState({ name: "", ssh_host: "", ssh_user: "root", auth_type: "password" as "password" | "key" | "freestyle", secret: "", tailscale_ip: "", region: "", min_workers: 1, max_workers: 4 });
     const [busy, setBusy] = useState(false);
     const [err, setErr] = useState("");
     const [prov, setProv] = useState<{ serverId: number; status: string; current_step: string | null; steps: import("@/api/admin").ProvisionStep[] } | null>(null);
@@ -785,14 +785,17 @@ docker compose -f docker-compose.worker.yml up -d --build`;
 
     const submit = async () => {
       if (!f.name.trim()) { setErr("نام سرور الزامی است (مثلاً srv-eu-1)"); return; }
-      if (!f.ssh_host.trim()) { setErr("IP یا هاست SSH الزامی است"); return; }
-      if (!f.secret) { setErr(f.auth_type === "password" ? "رمز عبور SSH الزامی است" : "متن کلید خصوصی الزامی است"); return; }
+      if (!f.ssh_host.trim()) { setErr("IP/هاست SSH یا شناسه VM الزامی است"); return; }
+      if (f.auth_type === "freestyle") {
+        // whole `npx freestyle vm ssh ...` line is accepted; gateway extracts the vm id
+        if (!/vm-|freestyle/i.test(f.ssh_host) && !/^vm-/.test(f.ssh_host.trim())) { setErr("شناسه VM فرستایل را بده (خط کامل npx freestyle vm ssh ... را می‌توانی پیست کنی)"); return; }
+      } else if (!f.secret) { setErr(f.auth_type === "password" ? "رمز عبور SSH الزامی است" : "متن کلید خصوصی الزامی است"); return; }
       setBusy(true); setErr("");
       try {
         const r = await adminApi.provisionServer({
           name: f.name.trim(), ssh_host: f.ssh_host.trim(), ssh_user: f.ssh_user.trim() || "root",
           auth_type: f.auth_type,
-          ...(f.auth_type === "password" ? { ssh_password: f.secret } : { ssh_key: f.secret }),
+          ...(f.auth_type === "password" ? { ssh_password: f.secret } : f.auth_type === "key" ? { ssh_key: f.secret } : {}),
           tailscale_ip: f.tailscale_ip.trim() || null, region: f.region.trim() || null,
           min_workers: f.min_workers, max_workers: f.max_workers,
         });
@@ -834,8 +837,14 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                 <div className="flex gap-2 text-xs">
                   <label className={`flex-1 cursor-pointer rounded-xl border px-3 py-2.5 text-center ${f.auth_type === "password" ? "border-brand/60 bg-brand/10 font-bold" : "border-white/10 bg-white/[.04]"}`}><input type="radio" className="hidden" checked={f.auth_type === "password"} onChange={() => setF({ ...f, auth_type: "password" })} /> رمز عبور</label>
                   <label className={`flex-1 cursor-pointer rounded-xl border px-3 py-2.5 text-center ${f.auth_type === "key" ? "border-brand/60 bg-brand/10 font-bold" : "border-white/10 bg-white/[.04]"}`}><input type="radio" className="hidden" checked={f.auth_type === "key"} onChange={() => setF({ ...f, auth_type: "key" })} /> کلید خصوصی</label>
+                  <label className={`flex-1 cursor-pointer rounded-xl border px-3 py-2.5 text-center ${f.auth_type === "freestyle" ? "border-brand/60 bg-brand/10 font-bold" : "border-white/10 bg-white/[.04]"}`}><input type="radio" className="hidden" checked={f.auth_type === "freestyle"} onChange={() => setF({ ...f, auth_type: "freestyle" })} /> Freestyle VM</label>
                 </div>
-                {f.auth_type === "password"
+                {f.auth_type === "freestyle" ? (
+                  <>
+                    <textarea value={f.ssh_host} onChange={(e) => setF({ ...f, ssh_host: e.target.value })} placeholder="npx freestyle@latest vm ssh vm-xxxxxxxx --team acct-xxxx  (کل خط را پیست کن)" dir="ltr" rows={2} className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-left font-mono text-[11px] outline-none" />
+                    <p className="text-[11px] leading-5 text-muted">پنل کل خط را می‌خواند و شناسه VM را خودش برمی‌دارد. اجرای دستورها از طریق CLI فرستایل (FREESTYLE_API_KEY سرور) انجام می‌شود — نیازی به رمز/کلید SSH نیست. عنوان «هاست» فقط شناسه VM است.</p>
+                  </>
+                ) : f.auth_type === "password"
                   ? <input type="password" value={f.secret} onChange={(e) => setF({ ...f, secret: e.target.value })} placeholder="رمز عبور SSH *" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 outline-none" />
                   : <textarea value={f.secret} onChange={(e) => setF({ ...f, secret: e.target.value })} placeholder="-----BEGIN OPENSSH PRIVATE KEY----- ..." dir="ltr" rows={3} className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-left font-mono text-[11px] outline-none" />}
                 <input value={f.tailscale_ip} onChange={(e) => setF({ ...f, tailscale_ip: e.target.value })} placeholder="IP تیلسکیل مرکز (اختیاری)" dir="ltr" className="w-full rounded-xl border border-white/10 bg-white/[.04] px-3 py-2.5 text-left outline-none" />
