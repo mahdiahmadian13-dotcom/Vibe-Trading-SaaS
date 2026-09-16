@@ -22,20 +22,45 @@ export default function SwarmPage() {
   const [error, setError] = useState("");
   const [preset, setPreset] = useState<SwarmPreset | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     getSwarmPresets().then(setPresets).catch((e) => setError(e.message));
   }, []);
 
+  // Filtered preset list (search by title/name/market) — a plain grid of 30
+  // specialist teams is impossible to scan on a phone.
+  const visible = useMemo(() => {
+    const list = presets || [];
+    const q = query.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((p) =>
+      p.title.toLowerCase().includes(q) ||
+      p.name.toLowerCase().includes(q) ||
+      marketOf(p).includes(q)
+    );
+  }, [presets, query]);
+
   return (
     <div className="mx-auto w-full max-w-4xl px-4 pb-28 pt-5 md:px-8 md:pb-12 md:pt-8">
       <header className="mb-6 md:mb-8">
-        <h1 className="flex items-center gap-2 text-[19px] font-extrabold tracking-tight md:text-[22px]">
-          <Users size={20} className="text-brand" /> تیم‌های هوش مصنوعی
-        </h1>
-        <p className="mt-1.5 text-[12.5px] leading-6 text-muted md:text-[13.5px]">
-          یک تیم چندعاملی انتخاب کن، متغیرها را مشخص کن و تحلیل تیمی را اجرا کن
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="flex items-center gap-2 text-[19px] font-extrabold tracking-tight md:text-[22px]">
+              <Users size={20} className="text-brand" /> تیم‌های هوش مصنوعی
+            </h1>
+            <p className="mt-1.5 text-[12.5px] leading-6 text-muted md:text-[13.5px]">
+              یک تیم انتخاب کن، چند کارشناس هم‌زمان تحلیل می‌کنند و یک گزارش می‌گیری
+            </p>
+          </div>
+          <button
+            onClick={() => setHelpOpen(true)}
+            className="mt-1 flex shrink-0 items-center gap-1.5 rounded-full border border-brand/30 bg-brand/10 px-3 py-1.5 text-[11.5px] font-bold text-indigo-200 active:scale-95"
+          >
+            <FileText size={12} /> چطوری کار می‌کنه؟
+          </button>
+        </div>
         {/* tabs: new run / history — mirrors the bot's swarm menu + swhist */}
         <div className="mt-4 flex gap-2">
           <button
@@ -59,11 +84,22 @@ export default function SwarmPage() {
         {phase === "presets" && (
           <motion.div key="presets" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
             {!presets && !error ? <PresetSkeletons /> : (
-              <div className="grid gap-3 sm:grid-cols-2 md:gap-4">
-                {(presets || []).map((p) => (
-                  <PresetCard key={p.name} preset={p} onClick={() => { setPreset(p); setPhase("form"); }} />
-                ))}
-              </div>
+              <>
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="🔍 جستجو: کریپتو، تکنیکال، پرتفوی…"
+                  className="mb-3 w-full rounded-xl border border-line bg-panel/70 px-4 py-2.5 text-[13px] text-ink outline-none transition-colors placeholder:text-muted/70 focus:border-brand/50"
+                />
+                <div className="grid gap-3 sm:grid-cols-2 md:gap-4">
+                  {visible.map((p) => (
+                    <PresetCard key={p.name} preset={p} onClick={() => { setPreset(p); setPhase("form"); }} />
+                  ))}
+                </div>
+                {visible.length === 0 && (
+                  <EmptyState icon="🔎" title="چیزی پیدا نشد" desc="عبارت دیگری امتحان کن — مثلاً «کریپتو» یا «تکنیکال»" />
+                )}
+              </>
             )}
           </motion.div>
         )}
@@ -106,13 +142,107 @@ export default function SwarmPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {helpOpen && <HowItWorks onClose={() => setHelpOpen(false)} />}
+      </AnimatePresence>
     </div>
   );
 }
 
 /* =============================== preset cards ============================== */
 
+/* =============================== presets UX ================================ */
+/* Owner decision: users found the swarm cards confusing — nobody knew what a
+   "team" does. Every card now gets: (1) a one-line plain-Persian "what you
+   get", (2) a market badge, and the page gets a "چطوری کار می‌کنه؟" popup
+   explaining the 4 steps. Search/filter by market. */
+
+type Market = "کریپتو" | "سهام" | "ارز/کالا" | "پرتفوی" | "کوانتوم" | "ریسک" | "احساسات";
+
+const MARKET_OF: Array<{ re: RegExp; market: Market }> = [
+  { re: /crypto/i, market: "کریپتو" },
+  { re: /equity|earnings|value_investing|fund_selection|convertible|global_equities/i, market: "سهام" },
+  { re: /commodity|macro_rates|macro_strategy/i, market: "ارز/کالا" },
+  { re: /portfolio|etf_allocation|global_allocation|investment_committee/i, market: "پرتفوی" },
+  { re: /quant|ml_|statistical|pairs_research|factor_research|technical/i, market: "کوانتوم" },
+  { re: /risk|geopolitical|derivatives/i, market: "ریسک" },
+  { re: /sentiment|social_alpha/i, market: "احساسات" },
+];
+
+function marketOf(preset: SwarmPreset): Market {
+  for (const { re, market } of MARKET_OF) if (re.test(preset.name)) return market;
+  return "سهام";
+}
+
+/* One-line plain-Persian promise per preset family (matches the descriptions
+   the engine sends, written the way a normal user talks). */
+const PLAIN_FA: Array<{ re: RegExp; text: string }> = [
+  { re: /crypto_trading_desk/i, text: "۴ کارشناس با هم ورود، حد ضرر و مدیریت ریسک معامله کریپتو رو طراحی می‌کنن" },
+  { re: /crypto_research_lab/i, text: "۴ کارشناس آن‌چین، دیفای و احساسات بازار کریپتو رو موازی تحلیل می‌کنن و یه پیشنهاد شفاف می‌دن" },
+  { re: /technical/i, text: "۶ تحلیلگر تکنیکال با هم چارت و اندیکاتورها رو می‌سنجند و یه جمع‌بندی معاملاتی می‌نویسن" },
+  { re: /pairs_research|statistical/i, text: "۴ کارشناس جفت‌های هم‌بسته و فرصت‌های آربیتراژ رو پیدا می‌کنن" },
+  { re: /quant_strategy_desk|ml_quant_lab|factor/i, text: "تیم کوانت استراتژی کمی و داده‌محور می‌سازه و بک‌تست‌شده تحویل می‌ده" },
+  { re: /value_investing/i, text: "کمیته‌ای به سبک بافت و مونگر ارزش ذاتی شرکت‌ها رو می‌سنجه" },
+  { re: /earnings/i, text: "۴ کارشناس گزارش‌های فصلی و روند سود شرکت رو پیش از انتشار می‌سنجند" },
+  { re: /equity_research|global_equities|fundamental/i, text: "تیم از کلان تا خرد سهام رو لایه‌به‌لایه تحلیل و گزارش می‌ده" },
+  { re: /portfolio|etf_allocation|global_allocation|investment_committee|fund_selection/i, text: "کمیته ترکیب پرتفویت رو بازطراحی و تخصیص دارایی پیشنهاد می‌ده" },
+  { re: /risk_committee|geopolitical/i, text: "کمیته ریسک سناریوهای خطر و نقطه‌های خروج رو مشخص می‌کنه" },
+  { re: /derivatives/i, text: "تیم گزینه‌ها و آینده‌ها: از تحلیل نوسان تا مدیریت یونانی‌های ریسک" },
+  { re: /macro_rates|macro_strategy|commodity/i, text: "تیم کلان اقتصادی، نرخ بهره و ارز/کالا رو تحلیل و جهت بازار را مشخص می‌کنه" },
+  { re: /sentiment|social_alpha/i, text: "از شبکه‌های اجتماعی و اخبار، سیگنال‌های احساسات بازار استخراج می‌شه" },
+  { re: /credit|convertible/i, text: "تیم اعتبار و اوراق بدهی، کیفیت اعتباری و ریسک نرخ رو می‌سنجه" },
+  { re: /sector_rotation|event_driven/i, text: "تیم چرخش صنایع و رویدادهای مؤثر بازار را رصد و پیشنهاد می‌ده" },
+];
+
+function plainOf(preset: SwarmPreset): string {
+  for (const { re, text } of PLAIN_FA) if (re.test(preset.name)) return text;
+  return `${preset.agent_count} ایجنت هوش مصنوعی موازی تحلیل می‌کنند و یک گزارش نهایی می‌دهند`;
+}
+
+function HowItWorks({ onClose }: { onClose: () => void }) {
+  const steps: Array<[string, string, string]> = [
+    ["۱", "تیم را انتخاب کن", "هر تیم چند ایجنت تخصصی دارد (مثل تیم کریپتو با ۴ کارشناس)"],
+    ["۲", "فرم کوتاه را پر کن", "فقط دارایی هدف و بازه زمانی — بقیه را تیم می‌فهمد"],
+    ["۳", "ایجنت‌ها موازی کار می‌کنند", "همه هم‌زمان تحلیل می‌کنند، مثل جلسه کمیته واقعی"],
+    ["۴", "گزارش PDF بگیر", "جمع‌بندی نهایی + پیشنهاد شفاف، قابل دانلود"],
+  ];
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.94, y: 14, opacity: 0 }} animate={{ scale: 1, y: 0, opacity: 1 }} exit={{ scale: 0.94, y: 14, opacity: 0 }}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+      >
+        <h3 className="flex items-center gap-2 text-[15px] font-extrabold"><Users size={17} className="text-brand" /> Swarm چطوری کار می‌کند؟</h3>
+        <p className="mt-2 text-[12.5px] leading-6 text-muted">
+          Swarm یعنی «تیم چند ایجنتی» — به‌جای یک هوش مصنوعی، چند کارشناس تخصصی
+          هم‌زمان روی موضوع تو کار می‌کنند و آخرش یک گزارش واحد تحویل می‌گیری.
+        </p>
+        <div className="mt-4 space-y-2.5">
+          {steps.map(([n, t, d]) => (
+            <div key={n} className="flex items-start gap-3 rounded-xl border border-line bg-white/[.02] p-3">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand/20 text-[12px] font-black text-indigo-200">{n}</span>
+              <div className="min-w-0">
+                <div className="text-[12.5px] font-bold">{t}</div>
+                <div className="mt-0.5 text-[11px] leading-5 text-muted">{d}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <Button className="mt-4 w-full" onClick={onClose}>فهمیدم، بریم</Button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function PresetCard({ preset, onClick }: { preset: SwarmPreset; onClick: () => void }) {
+  const market = marketOf(preset);
+  const plain = plainOf(preset);
   return (
     <motion.button
       whileTap={{ scale: 0.985 }}
@@ -121,14 +251,17 @@ function PresetCard({ preset, onClick }: { preset: SwarmPreset; onClick: () => v
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-[14px] font-extrabold md:text-[14.5px]">{preset.title}</span>
+            <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-bold text-indigo-200 ring-1 ring-inset ring-brand/30">{market}</span>
           </div>
           <div dir="ltr" className="mt-0.5 text-right text-[10.5px] text-muted/70">{preset.name}</div>
         </div>
         <ChevronLeft size={16} className="mt-1 shrink-0 text-muted transition-transform group-hover:-translate-x-0.5" />
       </div>
-      <p className="mt-2.5 line-clamp-2 text-[12px] leading-6 text-muted">{preset.description}</p>
+      <p className="mt-2.5 line-clamp-2 text-[12px] leading-6 text-muted">
+        <span className="font-bold text-indigo-200/90">نتیجه: </span>{plain}
+      </p>
       <div className="mt-3 flex items-center gap-2">
         <Badge tone="bt"><Users size={11} /> {faNum(preset.agent_count)} ایجنت</Badge>
         <Badge tone="chat">{faNum(preset.variables.length)} متغیر</Badge>
