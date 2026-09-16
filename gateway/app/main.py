@@ -605,24 +605,13 @@ async def send_message(
     await _require_owned_session(db, user, session_id)
     await _check_limit(db, user, "message")
 
-    # Free-tier: one backtest coupon per analysis message
-    used_coupon = None
-    if coupons_mod.uses_coupons(user):
-        used_coupon = await coupons_mod.try_consume(db, user, "backtest", action=f"chat:{session_id[:12]}")
-        if used_coupon is None:
-            raise HTTPException(
-                status_code=429,
-                detail="کوپن بک‌تست شما به پایان رسید. ۲۴ ساعت دیگر (نیمه‌شب) کوپن جدید شارژ می‌شود.",
-            )
+    # Fleet-001 policy (user decision 2026-09-16): plain chat is FREE.
+    # The backtest coupon is consumed only when the chat produces an actual
+    # completed backtest (run with metrics) — enforced in the run-detail /
+    # runs-list gate below, not here.
 
     pool = get_pool()
-    try:
-        result = await pool.request(db, "POST", f"/sessions/{session_id}/messages", json=body)
-    except HTTPException:
-        # engine rejected (busy/409/5xx) → give the coupon back
-        if used_coupon is not None:
-            await coupons_mod.refund_coupon(db, user.id, used_coupon.action or "")
-        raise
+    result = await pool.request(db, "POST", f"/sessions/{session_id}/messages", json=body)
 
     usage = await _get_usage(db, user.id)
     usage.messages_sent += 1
@@ -1592,6 +1581,36 @@ async def get_run_detail(
             raise HTTPException(403, "این گزارش متعلق به شما نیست")
         if not run_session and not owned:
             raise HTTPException(403, "این گزارش متعلق به شما نیست")
+
+    # Fleet-001 coupon metering (user decision 2026-09-16): a completed
+    # backtest — a run with real metrics — consumes ONE backtest coupon from
+    # free-tier users. Plain chat never consumes. Metering happens once per
+    # run: the run_id is stamped on the coupon, repeated opens are free.
+    _m = detail.get("metrics") or {}
+    _has_metrics = (
+        detail.get("total_return") is not None
+        or _m.get("total_return") is not None
+        or _m.get("sharpe") is not None
+    )
+    if coupons_mod.uses_coupons(user) and _has_metrics:
+        from shared.models import Coupon as _Coupon
+        already = (
+            await db.execute(
+                select(_Coupon).where(
+                    _Coupon.user_id == user.id,
+                    _Coupon.status == "used",
+                    _Coupon.action == f"run:{run_id}",
+                )
+            )
+        ).scalar_one_or_none()
+        if already is None:
+            c = await coupons_mod.try_consume(db, user, "backtest", action=f"run:{run_id}")
+            if c is None:
+                raise HTTPException(
+                    429,
+                    "این بک‌تست یک کوپن بک‌تست مصرف می‌کند. کوپن شما به پایان رسید — "
+                    "۲۴ ساعت دیگر (نیمه‌شب تهران) کوپن جدید شارژ می‌شود.",
+                )
 
     if not full:
         _HEAVY = (
