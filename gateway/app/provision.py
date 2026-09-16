@@ -57,8 +57,8 @@ async def _connect(server: ServerNode):
     """Open a transport. For freestyle VMs this is a CLI-based fake conn;
     otherwise an asyncssh connection. Plaintext lives only in this scope."""
     if (server.ssh_auth_type or "") == "freestyle":
-        from app.provision_freestyle import FreestyleConn, parse_vm_id
-        return FreestyleConn(parse_vm_id(server.ssh_host or ""))
+        from app.provision_freestyle import FreestyleConn, parse_team, parse_vm_id
+        return FreestyleConn(parse_vm_id(server.ssh_host or ""), team=parse_team(server.ssh_host or ""))
 
     import asyncssh
 

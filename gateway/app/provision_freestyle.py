@@ -32,13 +32,19 @@ def _cli() -> str:
     raise FreestyleError("freestyle CLI یافت نشد (npx در ایمیج گیت‌وی نصب نیست)")
 
 
-async def freestyle_exec(vm_id: str, cmd: str, timeout_s: int = FREESTYLE_TIMEOUT_S) -> tuple[int, str]:
+async def freestyle_exec(vm_id: str, cmd: str, timeout_s: int = FREESTYLE_TIMEOUT_S, team: str | None = None) -> tuple[int, str]:
     """Run `cmd` inside the VM via the freestyle CLI. Returns (rc, output)."""
     exe = _cli()
+    team_flag: list[str] = []
+    # Per-VM team wins (parsed from the pasted ssh line); else env FREESTYLE_TEAM.
+    import os as _os
+    eff_team = (team or "").strip() or (_os.getenv("FREESTYLE_TEAM") or "").strip()
+    if eff_team:
+        team_flag = ["--team", eff_team]
     if exe.endswith("npx"):
-        argv = [exe, "-y", "freestyle@latest", "vm", "exec", vm_id, "--", "--", "sh", "-lc", cmd]
+        argv = [exe, "-y", "freestyle@latest", "vm", "exec", vm_id, *team_flag, "--", "--", "sh", "-lc", cmd]
     else:
-        argv = [exe, "vm", "exec", vm_id, "--", "--", "sh", "-lc", cmd]
+        argv = [exe, "vm", "exec", vm_id, *team_flag, "--", "--", "sh", "-lc", cmd]
 
     import os
 
@@ -66,12 +72,13 @@ class FreestyleConn:
     .stdout, .stderr. We implement run() and pre-combined output.
     """
 
-    def __init__(self, vm_id: str) -> None:
+    def __init__(self, vm_id: str, team: str | None = None) -> None:
         self.vm_id = vm_id
+        self.team = (team or "").strip() or None
         self.kind = "freestyle"
 
     async def run(self, cmd: str, timeout: int = FREESTYLE_TIMEOUT_S):
-        rc, out = await freestyle_exec(self.vm_id, cmd, timeout_s=timeout)
+        rc, out = await freestyle_exec(self.vm_id, cmd, timeout_s=timeout, team=self.team)
 
         class _Res:
             def __init__(self, rc: int, out: str) -> None:
@@ -100,3 +107,15 @@ def parse_vm_id(ssh_host: str) -> str:
         if tok.startswith("vm-") or re.fullmatch(r"[0-9a-f]{16,}", tok):
             return tok
     return tokens[0]
+
+
+def parse_team(ssh_host: str) -> str | None:
+    """Extract `--team <id>` from the pasted freestyle ssh line (if present).
+
+    Each VM line can carry its own team — per-VM team wins over the
+    FREESTYLE_TEAM env default in freestyle_exec().
+    """
+    import re
+
+    m = re.search(r"--team[=\s]+([^\s]+)", ssh_host or "")
+    return m.group(1).strip() if m else None
