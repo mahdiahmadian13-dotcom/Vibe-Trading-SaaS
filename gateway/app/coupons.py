@@ -181,8 +181,12 @@ async def coupon_state(db: AsyncSession, user: User) -> dict:
     }
 
 
-async def try_consume(db: AsyncSession, user: User, kind: str, action: str = "") -> Coupon | None:
+async def try_consume(db: AsyncSession, user: User | int, kind: str, action: str = "") -> Coupon | None:
     """Atomically consume one active coupon of the given kind.
+
+    ``user`` may be a User ORM object or a plain user_id (int) — the int form
+    is safe from background loops where ORM expiry after internal commits
+    would raise MissingGreenlet.
 
     Returns the consumed Coupon, or None if the user has no active coupon
     (caller raises 429 with a friendly Persian message).
@@ -190,13 +194,14 @@ async def try_consume(db: AsyncSession, user: User, kind: str, action: str = "")
     credit (welcome/bonus/referral — never expire). One transaction, so
     two concurrent submits with 1 coupon left consume exactly once.
     """
-    await ensure_daily(db, user.id) if kind == "backtest" else None
-    await ensure_weekly(db, user.id) if kind == "swarm" else None
+    user_id = user if isinstance(user, int) else user.id
+    await ensure_daily(db, user_id) if kind == "backtest" else None
+    await ensure_weekly(db, user_id) if kind == "swarm" else None
 
     now = _now()
     rows = (await db.execute(
         select(Coupon)
-        .where(Coupon.user_id == user.id, Coupon.kind == kind, Coupon.status == "active")
+        .where(Coupon.user_id == user_id, Coupon.kind == kind, Coupon.status == "active")
         .order_by(Coupon.created_at.asc())
     )).scalars().all()
 

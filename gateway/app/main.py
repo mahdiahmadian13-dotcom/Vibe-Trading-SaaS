@@ -221,11 +221,15 @@ async def lifespan(app: FastAPI):
     # T051: 30-day retention janitor (daily)
     from app.retention import start_retention_loop, stop_retention_loop
     start_retention_loop()
+    # Fleet-001: consume coupons at BACKTEST COMPLETION (30s scanner)
+    from app.metering import start_metering_loop, stop_metering_loop
+    start_metering_loop()
     yield
     await stop_dispatcher()
     await stop_background_loops()
     await stop_autoscale_loop()
     await stop_retention_loop()
+    await stop_metering_loop()
 
 
 app = FastAPI(
@@ -605,10 +609,22 @@ async def send_message(
     await _require_owned_session(db, user, session_id)
     await _check_limit(db, user, "message")
 
-    # Fleet-001 policy (user decision 2026-09-16): plain chat is FREE.
-    # The backtest coupon is consumed only when the chat produces an actual
-    # completed backtest (run with metrics) — enforced in the run-detail /
-    # runs-list gate below, not here.
+    # Fleet-001 policy (user decision 2026-09-16): plain chat is free, but a
+    # message that asks for a backtest from a free user WITHOUT any coupon is
+    # refused here — before the engine starts anything. Completion-time
+    # consumption for users WITH coupons lives in app.metering.
+    if coupons_mod.uses_coupons(user):
+        from app.metering import has_backtest_intent
+        text = str((body or {}).get("content") or (body or {}).get("message") or "")
+        if has_backtest_intent(text):
+            state = await coupons_mod.coupon_state(db, user)
+            if (state.get("backtest") or {}).get("active", 0) <= 0:
+                raise HTTPException(
+                    429,
+                    "اجرای بک‌تست یک کوپن بک‌تست نیاز دارد. کوپن شما به پایان رسید — "
+                    "۲۴ ساعت دیگر (نیمه‌شب تهران) کوپن جدید شارژ می‌شود. "
+                    "گفت‌وگوی معمولی رایگان است.",
+                )
 
     pool = get_pool()
     result = await pool.request(db, "POST", f"/sessions/{session_id}/messages", json=body)
@@ -1604,6 +1620,8 @@ async def get_run_detail(
             )
         ).scalar_one_or_none()
         if already is None:
+            # The metering loop usually consumed this at completion time
+            # (same action stamp) — only meter here if it missed (loop down).
             c = await coupons_mod.try_consume(db, user, "backtest", action=f"run:{run_id}")
             if c is None:
                 raise HTTPException(
