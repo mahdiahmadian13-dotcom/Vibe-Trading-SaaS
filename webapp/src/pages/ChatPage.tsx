@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { MessageSquare, Plus, Send, Square, History, ChevronRight, Pencil, Check, X } from "lucide-react";
 import {
   listSessions, createSession, getMessages, sendMessage, cancelRun,
-  waitForNewAnswer, sid, renameSession,
+  waitForNewAnswer, streamAnswer, sid, renameSession,
   type ChatMessage, type SessionRow,
 } from "@/api/chat";
 import { faNum } from "@/lib/utils";
@@ -122,7 +122,7 @@ export default function ChatPage() {
     let idOrNull = current;
     if (!idOrNull) {
       try {
-        const s = await createSession();
+        const s = await createSession("");
         const newId = s.session_id || (s as unknown as { id?: string }).id;
         if (!newId) throw new Error("شناسه سشن دریافت نشد");
         setSessions((prev) => [{ session_id: newId, title: "چت جدید" }, ...(prev || [])]);
@@ -149,6 +149,32 @@ export default function ChatPage() {
       const pre = await getMessages(id);
       const preCount = Array.isArray(pre) ? pre.length : 0;
 
+      // Live streaming: subscribe to the SSE event stream BEFORE posting the
+      // message so not a single text_delta is missed (perceived latency ≈
+      // first token instead of full completion 8–16s). Polling remains the
+      // correctness fallback when SSE is unavailable.
+      let answer: string | null = null;
+      let streamBubbleAdded = false;
+      const stream = streamAnswer(id, {
+        maxWait: 240,
+        signal: stopRef.current,
+        onDelta: (full) => {
+          setBubbles((b) => {
+            if (!streamBubbleAdded) {
+              streamBubbleAdded = true;
+              return [...b, { role: "bot", text: full }];
+            }
+            const last = b[b.length - 1];
+            if (last && last.role === "bot") {
+              const copy = [...b];
+              copy[copy.length - 1] = { role: "bot", text: full };
+              return copy;
+            }
+            return b;
+          });
+        },
+      });
+
       await sendMessage(id, text);
 
       // Auto-title: name the session from the first message (best-effort)
@@ -164,11 +190,29 @@ export default function ChatPage() {
         return prev;
       });
 
-      const answer = await waitForNewAnswer(id, preCount, {
-        maxWait: 240,
-        signal: stopRef.current,
-        onTick: () => {},
-      });
+      answer = await stream.done;
+
+      if (!answer || !answer.trim()) {
+        // SSE unavailable/missed → fall back to message polling for the final text
+        stream.cancel();
+        answer = await waitForNewAnswer(id, preCount, {
+          maxWait: 240,
+          signal: stopRef.current,
+          onTick: () => {},
+        });
+      }
+
+      // Replace the streamed bubble with the authoritative final message
+      if (!stopRef.current.cancelled) {
+        setBubbles((b) => {
+          const copy = [...b];
+          if (streamBubbleAdded && copy.length && copy[copy.length - 1].role === "bot") {
+            copy.pop();
+          }
+          if (answer && answer.trim()) copy.push({ role: "bot", text: answer });
+          return copy;
+        });
+      }
 
       if (stopRef.current.cancelled) {
         try { await cancelRun(id); } catch { /* ignore */ }
