@@ -13,9 +13,16 @@ import { CouponBlocker, CouponCards, isCouponError } from "@/components/Coupons"
 
 type Bubble = { role: "user" | "bot"; text: string };
 
+/* Restore the last open chat across tab switches (bottom-nav round-trips).
+   sessionStorage survives page swaps within the WebApp session. */
+const CURRENT_CHAT_KEY = "chat:current";
+const lastChatId = () => {
+  try { return sessionStorage.getItem(CURRENT_CHAT_KEY); } catch { return null; }
+};
+
 export default function ChatPage() {
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
-  const [current, setCurrent] = useState<string | null>(null);
+  const [current, setCurrent] = useState<string | null>(() => lastChatId());
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -41,6 +48,31 @@ export default function ChatPage() {
       .then((list) => setSessions(Array.isArray(list) ? list : []))
       .catch((e) => { setLoadErr(e.message); setSessions([]); });
   }, []);
+
+  // Persist the open chat id + reload its messages whenever the page remounts
+  // (returning from another bottom-nav tab).
+  useEffect(() => {
+    if (current) {
+      try { sessionStorage.setItem(CURRENT_CHAT_KEY, current); } catch { /* ignore */ }
+    }
+  }, [current]);
+
+  useEffect(() => {
+    if (!current) return;
+    let alive = true;
+    setBubbles(null!);
+    getMessages(current)
+      .then((msgs) => {
+        if (!alive) return;
+        const list = Array.isArray(msgs) ? msgs : [];
+        setBubbles(list.map((m) => ({
+          role: m.role === "user" || m.role === "human" ? "user" : "bot",
+          text: m.content || "",
+        })));
+      })
+      .catch(() => { if (alive) setBubbles([]); });
+    return () => { alive = false; };
+  }, [current]);
 
   useEffect(() => { scrollDown(); }, [bubbles]);
 
