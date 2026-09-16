@@ -44,7 +44,11 @@ function useCountdown(target: string | null | undefined) {
   return txt;
 }
 
-const fa = (n: number) => String(n).padStart(2, "۰").replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[+d]);
+/* Two-digit Persian numeral: 0→۰۱, 3→۰۳, 12→۱۲ (owner request). */
+const fa = (n: number) => {
+  const raw = String(n).padStart(2, "0");
+  return raw.replace(/\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[+d]);
+};
 
 /* --------------------------------------------------------------------------- */
 
@@ -160,7 +164,7 @@ function SwarmCard({ w, compact }: { w: CouponWallet; compact?: boolean }) {
             <Users size={17} />
           </span>
           <div>
-            <div className="text-[13px] font-extrabold">کوپن سوارم</div>
+            <div className="text-[13px] font-extrabold">کوپن Swarm</div>
             <div className="text-[10.5px] text-muted">تیم چندعاملی · هفتگی</div>
           </div>
         </div>
@@ -208,11 +212,11 @@ export function CouponBlocker({ kind, onRetry }: { kind: "backtest" | "swarm"; o
         <Timer size={26} className="text-amber-300" />
       </div>
       <h3 className="mt-4 text-[15.5px] font-extrabold">
-        {isSwarm ? "کوپن سوارم هفتگی شما به پایان رسید" : "کوپن بک‌تست شما به پایان رسید"}
+        {isSwarm ? "کوپن Swarm هفتگی شما به پایان رسید" : "کوپن بک‌تست شما به پایان رسید"}
       </h3>
       <p className="mt-2 text-[12.5px] leading-6 text-muted">
         {isSwarm
-          ? "هر هفته ۱ کوپن سوارم دریافت می‌کنی. کوپن بعدی دوشنبه ساعت ۰۰:۰۰ (تهران) شارژ می‌شود."
+          ? "هر هفته ۱ کوپن Swarm دریافت می‌کنی. کوپن بعدی دوشنبه ساعت ۰۰:۰۰ (تهران) شارژ می‌شود."
           : "هر روز ۱ کوپن بک‌تست دریافت می‌کنی. کوپن بعدی نیمه‌شب (تهران) شارژ می‌شود."}
       </p>
       <div className="mt-4 flex items-center justify-center gap-3 rounded-xl border border-amber/25 bg-amber/10 px-4 py-3">
