@@ -149,6 +149,16 @@ async def task_chat(ctx: dict, task_id: str, user_id: int, params: dict) -> dict
     await publish_progress(user_id, task_id, {"status": "running", "phase": "sending"})
 
     try:
+        # No session yet → create one (POST /sessions//messages would 405).
+        if not session_id:
+            created = await engine_request("POST", "/sessions", json={"title": f"task {task_id[:8]}"})
+            session_id = created.get("session_id") or created.get("id") or ""
+            if not session_id:
+                err = f"cannot create engine session: {str(created)[:200]}"
+                await update_task(task_id, status=TaskStatus.FAILED, error_message=err, completed_at=_utcnow())
+                await publish_progress(user_id, task_id, {"status": "failed", "error": err})
+                return {"status": "failed", "error": err}
+
         result = await engine_request("POST", f"/sessions/{session_id}/messages", json={"content": message})
         if "error" in result:
             await update_task(task_id, status=TaskStatus.FAILED, error_message=result["error"], completed_at=_utcnow())
