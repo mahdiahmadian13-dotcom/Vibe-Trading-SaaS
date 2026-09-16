@@ -18,9 +18,10 @@ services:
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --appendonly yes
+      --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     restart: always
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -60,7 +61,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       # Freestyle VM provisioning (auth_type=freestyle) — set in .env
@@ -98,7 +99,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - GATEWAY_URL=http://gateway:9000
       - TELEGRAM_WEBAPP_URL=${TELEGRAM_WEBAPP_URL:-}
       - TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME:-}
@@ -148,7 +149,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       # WORKER_NAME unset => auto worker-<hostname> (unique per replica when scaling)
       - WORKER_NAME=${CENTRAL_WORKER_NAME:-}
       - WORKER_CONCURRENCY=${CENTRAL_WORKER_CONCURRENCY:-4}
