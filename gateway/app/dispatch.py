@@ -42,6 +42,7 @@ import pickle
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import redis.asyncio as aioredis
@@ -61,6 +62,14 @@ JOB_EXPIRE_MS = 86_400_000  # 24h, matches arq default expires_extra
 PLAN_PRIORITY_MS = {"free": 0, "starter": 60_000, "pro": 300_000, "enterprise": 900_000}
 
 
+# Workers whose heartbeat is older than this are treated as stale at
+# dispatch time: they stay in the registry (graceful shutdown deletes the
+# entry anyway) but never receive NEW jobs. The reaper rescues their queues.
+# 90s = 3 missed 30s heartbeats. Owner decision (fleet test 2026-09-16):
+# central worker recreate left ghost names that swallowed jobs.
+HEARTBEAT_FRESH_S = int(os.getenv("DISPATCH_HEARTBEAT_FRESH_S", "90"))
+
+
 @dataclass
 class WorkerInfo:
     name: str
@@ -74,6 +83,20 @@ class WorkerInfo:
     @property
     def is_ready(self) -> bool:
         return self.status == "ready"
+
+    @property
+    def is_fresh(self) -> bool:
+        """Heartbeat within HEARTBEAT_FRESH_S. Unparseable/missing = stale."""
+        if not self.heartbeat_at:
+            return False
+        try:
+            ts = datetime.fromisoformat(self.heartbeat_at)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - ts).total_seconds()
+            return 0 <= age <= HEARTBEAT_FRESH_S
+        except (ValueError, TypeError):
+            return False
 
     @property
     def inflight_key(self) -> str:
@@ -156,7 +179,7 @@ class Dispatcher:
         exclude = exclude or set()
         blocked = await self._blocked_server_workers()
         cands = [w for w in await self.get_workers()
-                 if w.is_ready and w.name not in exclude and w.name not in blocked]
+                 if w.is_ready and w.is_fresh and w.name not in exclude and w.name not in blocked]
         if not cands:
             return None
         loads = await asyncio.gather(*(self.worker_load(w) for w in cands))
@@ -228,7 +251,7 @@ class Dispatcher:
         rescue below is unchanged.
         """
         r = await self._r()
-        live = {w.name for w in await self.get_workers() if w.is_ready}
+        live = {w.name for w in await self.get_workers() if w.is_ready and w.is_fresh}
         await self._reap_dead_servers(r, live)
 
         # 0) Expire inflight members older than TTL (lost completion / zombie entries)
