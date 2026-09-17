@@ -16,3 +16,6 @@ node_modules/
 webapp/node_modules/
 package-lock.json
 webapp/package-lock.json
+# hashed Vite bundles: index.html is tracked, hashed assets are deployed artifacts
+gateway/app/static/assets/
+webapp/tests/

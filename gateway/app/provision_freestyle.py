@@ -42,9 +42,9 @@ async def freestyle_exec(vm_id: str, cmd: str, timeout_s: int = FREESTYLE_TIMEOU
     if eff_team:
         team_flag = ["--team", eff_team]
     if exe.endswith("npx"):
-        argv = [exe, "-y", "freestyle@latest", "vm", "exec", vm_id, *team_flag, "--", "--", "sh", "-lc", cmd]
+        argv = [exe, "-y", "freestyle@latest", "vm", "exec", vm_id, *team_flag, "--", "sh", "-lc", cmd]
     else:
-        argv = [exe, "vm", "exec", vm_id, *team_flag, "--", "--", "sh", "-lc", cmd]
+        argv = [exe, "vm", "exec", vm_id, *team_flag, "--", "sh", "-lc", cmd]
 
     import os
 

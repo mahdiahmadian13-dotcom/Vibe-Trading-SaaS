@@ -67,6 +67,9 @@ services:
       # Freestyle VM provisioning (auth_type=freestyle) — set in .env
       - FREESTYLE_API_KEY=${FREESTYLE_API_KEY:-}
       - FREESTYLE_TEAM=${FREESTYLE_TEAM:-}
+    volumes:
+      # 002 preflight live-read: center engine env (ro) — LLM/repo values for node state
+      - /opt/Vibe-Trading/agent/.env:/engine-env/agent.env:ro
     depends_on:
       redis:
         condition: service_healthy

@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     DATABASE_URL_PUBLIC: str | None = None   # postgres URL reachable from node servers
     VIBE_ENGINE_URL_PUBLIC: str | None = None
     VIBE_NODE_SHARE_ENGINE_KEY: bool = False # share engine key with joined nodes
+    VIBE_NODE_LOCAL_ENGINE: bool = True      # 002: workers use the node-local engine (http://engine:8899)
+
+    # --- Distributed engine fleet (002): node engines build from git, LLM key ships to nodes ---
+    LLM_PROVIDER: str = ""       # e.g. openai (mirrors engine agent/.env LANGCHAIN_PROVIDER)
+    LLM_MODEL: str = ""          # e.g. mimo-v2.5-pro (mirrors LANGCHAIN_MODEL_NAME)
+    LLM_BASE_URL: str = ""       # e.g. https://opencode.ai/zen/go/v1 (mirrors OPENAI_BASE_URL)
+    LLM_API_KEY: str = ""        # shared LLM key — sent to node engines ONLY via node state, never logged
+    ENGINE_REPO: str = ""        # engine git repo for node builds (e.g. fork URL)
+    ENGINE_COMMIT: str = ""      # pinned engine commit for node builds
+    ENGINE_ENV_FILE: str = "/engine-env/agent.env"  # ro mount of /opt/Vibe-Trading/agent/.env into gateway (002 preflight live-read)
 
     # --- Worker ---
     WORKER_CONCURRENCY: int = 4

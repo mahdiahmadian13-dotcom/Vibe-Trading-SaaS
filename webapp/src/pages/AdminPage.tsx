@@ -3,6 +3,7 @@
     Activity, BadgeCheck, Box, Copy, Eye, EyeOff, HardDrive, LayoutDashboard,
     LogIn, Minus, Monitor, Plus, RefreshCw, Search, Server, Shield, Terminal, Trash2, Users, Wrench, X,
   } from "lucide-react";
+  import { PreflightReport } from "@/components/fleet/PreflightReport";
   import { api } from "@/api/client";
   import * as adminApi from "@/api/admin";
   import type { AdminOverview, AdminUserRow, EngineRow, MonitorSummary, ServerRow } from "@/api/admin";
@@ -766,6 +767,20 @@ docker compose -f docker-compose.worker.yml up -d --build`;
     const [err, setErr] = useState("");
     const [prov, setProv] = useState<{ serverId: number; status: string; current_step: string | null; steps: import("@/api/admin").ProvisionStep[] } | null>(null);
 
+    const [preflight, setPreflight] = useState<Awaited<ReturnType<typeof adminApi.getPreflight>> | null>(null);
+    const [checking, setChecking] = useState(true);
+    const [preflightError, setPreflightError] = useState("");
+    const [checkVersion, setCheckVersion] = useState(0);
+    useEffect(() => {
+      let cancelled = false;
+      setChecking(true); setPreflight(null); setPreflightError("");
+      adminApi.getPreflight(f.auth_type)
+        .then(r => { if (!cancelled) setPreflight(r); })
+        .catch((e: Error) => { if (!cancelled) setPreflightError(e.message); })
+        .finally(() => { if (!cancelled) setChecking(false); });
+      return () => { cancelled = true; };
+    }, [f.auth_type, checkVersion]);
+
     const poll = async (serverId: number) => {
       try {
         const p = await adminApi.getProvision(serverId);
@@ -813,7 +828,7 @@ docker compose -f docker-compose.worker.yml up -d --build`;
       finally { setBusy(false); }
     };
 
-    const STEP_LABELS: Record<string, string> = { connect: "اتصال SSH", docker: "داکر", net: "شبکه خصوصی", engine: "انجین", workers: "ورکرها", agent: "ایجنت", bench: "تست توان", done: "اتمام" };
+    const STEP_LABELS: Record<string, string> = { preflight: "پیش‌نیازهای مرکز", connect: "اتصال SSH", docker: "داکر", net: "شبکه خصوصی", engine: "انجین", workers: "ورکرها", agent: "ایجنت", bench: "تست توان", done: "اتمام" };
     const failed = prov?.status === "failed";
     const ready = prov?.status === "ready";
 
@@ -854,13 +869,14 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                 </div>
                 <p className="text-[11px] leading-5 text-muted">رمز/کلید فقط رمزنگاری‌شده نگه داشته می‌شود و هیچ‌جا به متن ساده نمایش داده نمی‌شود.</p>
               </div>
-              <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy}>{busy ? "…" : "نصب خودکار"}</Button></div>
+              <PreflightReport report={preflight} loading={checking} error={preflightError} onRefresh={() => setCheckVersion(v => v + 1)} />
+              <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={onClose}>انصراف</Button><Button onClick={submit} disabled={busy || checking || !preflight?.ready}>{busy ? "…" : "نصب خودکار"}</Button></div>
             </>
           ) : (
             <>
               <h3 className="font-black">نصب خودکار {failed ? "ناموفق شد" : ready ? "تمام شد ✅" : "در حال اجراست…"}</h3>
               <div className="mt-3 space-y-2">
-                {(["connect", "docker", "net", "engine", "workers", "agent", "bench"] as const).map((s) => {
+                {(["preflight", "connect", "docker", "net", "engine", "workers", "agent", "bench"] as const).map((s) => {
                   const rec = prov.steps.find((x) => x.step === s);
                   const active = !rec && prov.current_step === s;
                   return (

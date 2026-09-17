@@ -95,6 +95,9 @@ export const scaleServer = (id: number, body: { desired_workers: number; worker_
 
 export type ProvisionStep = { step: string; ts: string; ok: boolean | null; msg_fa: string };
 
+export const getPreflight = (authType: "password" | "key" | "freestyle") =>
+  api<import("../components/fleet/PreflightReport").PreflightReportData>(`/api/v1/admin/fleet/preflight?auth_type=${authType}`);
+
 export const provisionServer = (body: {
   name: string; ssh_host: string; ssh_user?: string; auth_type: "password" | "key" | "freestyle";
   ssh_password?: string | null; ssh_key?: string | null; tailscale_ip?: string | null;

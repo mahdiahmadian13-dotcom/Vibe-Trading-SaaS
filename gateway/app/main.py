@@ -1926,6 +1926,19 @@ class ServerProvisionIn(BaseModel):
     max_workers: int = 8
 
 
+@app.get("/api/v1/admin/fleet/preflight")
+async def admin_fleet_preflight(
+    auth_type: str = Query("password", pattern="^(password|key|freestyle)$"),
+    admin: User = Depends(_can_servers),
+    settings=Depends(get_settings),
+):
+    """Read-only prerequisite report. Never connects to a node or returns secrets."""
+    from app.node_env import llm_for_nodes
+    from app.preflight import run_preflight, preflight_failures
+    checks = run_preflight(settings, llm_for_nodes(settings), auth_type=auth_type)
+    return {"ready": not preflight_failures(checks), "checks": checks}
+
+
 @app.post("/api/v1/admin/fleet/servers")
 async def admin_provision_server(req: ServerProvisionIn, admin: User = Depends(_can_servers), db: AsyncSession = Depends(get_db)):
     """Register a server + auto-provision a FULL node over SSH (US-09, FR-020/021).
@@ -2006,7 +2019,22 @@ async def admin_provision_retry(server_id: int, admin: User = Depends(_can_serve
     if job.status == "running":
         raise HTTPException(409, "نصب در حال اجراست")
     if job.status == "ready":
-        return {"ok": True, "status": "ready"}
+        # "Reinstall": re-run everything (new ProvisionJob) — this is how an
+        # updated engine pin (or new code) reaches an already-provisioned node.
+        s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
+        if not s or not s.ssh_secret:
+            raise HTTPException(400, "مشخصات اتصال این سرور موجود نیست")
+        job2 = _ProvisionJob(server_id=server_id, status="running", current_step="preflight", steps=[], triggered_by=admin.id)
+        db.add(job2)
+        await db.commit()
+        await db.refresh(job2)
+
+        def _bundle_url2(server: ServerNode) -> str:
+            base = (get_settings().PUBLIC_BASE_URL or str(request_url_base())).rstrip("/")
+            return f"{base}/api/v1/node/{server.join_token}/bundle"
+
+        asyncio.create_task(provision_mod.run_provision_job(job2.id, _bundle_url2))
+        return {"ok": True, "status": "running", "current_step": "preflight", "job_id": job2.id}
     s = (await db.execute(select(ServerNode).where(ServerNode.id == server_id))).scalar_one_or_none()
     if not s or not s.ssh_secret:
         raise HTTPException(400, "مشخصات اتصال این سرور موجود نیست")
@@ -2344,6 +2372,9 @@ async def node_state(token: str, db: AsyncSession = Depends(get_db)):
     if not s:
         raise HTTPException(404, "توکن نامعتبر است")
     settings = get_settings()
+    # 002: node-bound engine/LLM config — Settings override, center engine file fallback
+    from app.node_env import llm_for_nodes
+    _node_env = llm_for_nodes(settings)
     return {
         "server": s.name,
         "desired_workers": s.desired_workers,
@@ -2352,8 +2383,15 @@ async def node_state(token: str, db: AsyncSession = Depends(get_db)):
         "mem_limit": s.mem_limit,
         "redis_url": settings.REDIS_URL_PUBLIC or settings.REDIS_URL,
         "database_url": settings.DATABASE_URL_PUBLIC or "",
-        "engine_url": settings.VIBE_ENGINE_URL_PUBLIC or settings.VIBE_ENGINE_URL,
-        "engine_api_key": settings.VIBE_ENGINE_API_KEY if settings.VIBE_NODE_SHARE_ENGINE_KEY else "",
+        "engine_url": "http://engine:8899" if getattr(settings, "VIBE_NODE_LOCAL_ENGINE", True)
+                      else (settings.VIBE_ENGINE_URL_PUBLIC or settings.VIBE_ENGINE_URL),
+        "engine_api_key": _node_env.get("engine_api_key", "") if settings.VIBE_NODE_SHARE_ENGINE_KEY else "",
+        "llm_provider": _node_env.get("llm_provider", ""),
+        "llm_model": _node_env.get("llm_model", ""),
+        "llm_base_url": _node_env.get("llm_base_url", ""),
+        "llm_api_key": _node_env.get("llm_api_key", "") if settings.VIBE_NODE_SHARE_ENGINE_KEY else "",
+        "engine_repo": _node_env.get("engine_repo", ""),
+        "engine_commit": _node_env.get("engine_commit", ""),
         "workers_epoch": s.worker_epoch,
     }
 

@@ -37,10 +37,13 @@ services:
       - WORKER_NAME_PREFIX=${VT_SERVER_NAME}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
       - WORKER_MAX_TASKS=${WORKER_MAX_TASKS:-100}
-      - VIBE_ENGINE_URL=${ENGINE_URL}
+      - VIBE_ENGINE_URL=${ENGINE_URL:-http://engine:8899}
       - VIBE_ENGINE_API_KEY=${ENGINE_API_KEY:-}
       - DATABASE_URL=${DATABASE_URL:-}
     restart: always
+    depends_on:
+      engine:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -51,3 +54,44 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Local engine (spec 002 full-node): built on-node from the pinned git commit
+  # (image vibe-node-engine:local, built by provisioning). Sessions live on a
+  # shared volume so worker pull-on-miss/write-through can read/write files.
+  # ---------------------------------------------------------------------------
+  engine:
+    image: vibe-node-engine:local
+    env_file:
+      - engine.env
+    environment:
+      - VIBE_TRADING_TRUST_DOCKER_LOOPBACK=1
+    ports:
+      - "127.0.0.1:8899:8899"   # loopback only — never publish the engine
+    volumes:
+      - vibe-sessions:/home/vibe/.vibe-trading
+      # engine.env is injected as PLAIN env_file (above), NOT bind-mounted:
+      # the container runs as `vibe` (uid 100) and a root-owned bind mount
+      # with mode 600 is unreadable inside → PermissionError at startup.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/vibe/.cache
+      - /home/vibe/.config
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    security_opt:
+      - "no-new-privileges:true"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8899/live')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  vibe-sessions:
