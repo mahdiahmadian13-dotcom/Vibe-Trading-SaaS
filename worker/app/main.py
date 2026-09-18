@@ -118,6 +118,98 @@ async def _mirror_run_to_center(run_id: str) -> None:
 
 
 # ============================================================================
+# T008 — session floating: pull-on-miss + write-through (files, worker-owned)
+# ============================================================================
+
+SESSION_FILE_KEYS = ("session.json", "messages.jsonl")  # small, always synced
+
+
+def _node_sessions_dir():
+    """Where the NODE engine keeps session files (shared volume with worker)."""
+    return __import__("pathlib").Path(os.getenv("NODE_SESSIONS_DIR", "/node-sessions"))
+
+
+def _is_session_missing(result: dict) -> bool:
+    """True when the engine error means 'unknown session' (404/not-found)."""
+    text = str(result.get("error") or "")
+    status = result.get("status_code")
+    if status == 404:
+        return True
+    return "not found" in text.lower() or "404" in text
+
+
+def _center_base() -> str:
+    return (os.getenv("GATEWAY_URL", "") or os.getenv("VT_CONTROL_URL", "")).rstrip("/")
+
+
+def _node_token() -> str:
+    return os.getenv("VT_JOIN_TOKEN", "")
+
+
+async def _pull_session_on_miss(session_id: str) -> bool:
+    """Local engine 404'd the session → restore it from the center mirror.
+
+    Writes the mirrored files into the shared sessions dir (in front of the
+    node engine — SessionStore reads disk per request, no restart needed).
+    Returns True when the session was restored.
+    """
+    center = _center_base()
+    token = _node_token()
+    if not center or not token:
+        return False
+    import base64 as _b64
+    from pathlib import Path as _Path
+    base = _node_sessions_dir() / session_id
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{center}/api/v1/fleet/sessions/pull/{session_id}",
+            headers={"X-Node-Token": token},
+        )
+        if resp.status_code != 200:
+            return False
+        files = (resp.json() or {}).get("files") or {}
+        base.mkdir(parents=True, exist_ok=True)
+        for name, blob in files.items():
+            if name in SESSION_FILE_KEYS or name.startswith("attempts/"):
+                dest = base / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(_b64.b64decode(blob))
+    return any((base / k).exists() for k in SESSION_FILE_KEYS)
+
+
+async def _push_session_to_center(session_id: str) -> None:
+    """Write-through after a successful task: upload THIS session's files to
+    the center mirror. Best-effort — a sync failure never fails the task."""
+    center = _center_base()
+    token = _node_token()
+    if not center or not token:
+        return
+    import base64 as _b64
+    from pathlib import Path as _Path
+    base = _node_sessions_dir() / session_id
+    if not base.is_dir():
+        return
+    files: dict = {}
+    for p in sorted(base.rglob("*")):
+        if not p.is_file() or p.stat().st_size > 2_000_000:
+            continue
+        rel = str(p.relative_to(base))
+        if rel in SESSION_FILE_KEYS or rel.startswith("attempts/") or rel.startswith("run_manifest"):
+            files[rel] = _b64.b64encode(p.read_bytes()).decode()
+    if not files:
+        return
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            await client.post(
+                f"{center}/api/v1/fleet/sessions/push",
+                headers={"X-Node-Token": token},
+                json={"session_id": session_id, "node": os.getenv("VT_SERVER_NAME", ""), "files": files},
+            )
+        except Exception:
+            pass  # best-effort: sync failure must not fail the task
+
+
+# ============================================================================
 # Redis Pub/Sub (progress notifications)
 # ============================================================================
 
@@ -160,6 +252,17 @@ async def task_chat(ctx: dict, task_id: str, user_id: int, params: dict) -> dict
                 return {"status": "failed", "error": err}
 
         result = await engine_request("POST", f"/sessions/{session_id}/messages", json={"content": message})
+        if "error" in result and _is_session_missing(result):
+            # T008 pull-on-miss: session lives on another node/center → restore
+            # its files on the shared volume, then retry once against local.
+            await publish_progress(user_id, task_id, {"status": "running", "phase": "session_pull"})
+            restored = False
+            try:
+                restored = await _pull_session_on_miss(session_id)
+            except Exception:
+                restored = False
+            if restored:
+                result = await engine_request("POST", f"/sessions/{session_id}/messages", json={"content": message})
         if "error" in result:
             await update_task(task_id, status=TaskStatus.FAILED, error_message=result["error"], completed_at=_utcnow())
             await publish_progress(user_id, task_id, {"status": "failed", "error": result["error"]})
@@ -180,6 +283,12 @@ async def task_chat(ctx: dict, task_id: str, user_id: int, params: dict) -> dict
                     answer = last["content"]
                     await update_task(task_id, status=TaskStatus.COMPLETED, result={"answer": answer}, completed_at=_utcnow())
                     await publish_progress(user_id, task_id, {"status": "completed", "answer": answer[:500]})
+                    # T008 write-through: push this session's files to the center
+                    # mirror (best-effort — never affects the task result).
+                    try:
+                        await _push_session_to_center(session_id)
+                    except Exception:
+                        pass
                     return {"status": "completed", "answer": answer}
 
         await update_task(task_id, status=TaskStatus.FAILED, error_message="Timeout", completed_at=_utcnow())

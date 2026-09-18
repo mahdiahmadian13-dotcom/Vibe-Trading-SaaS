@@ -328,6 +328,8 @@ class ServerNode(Base):
     provision_log = Column(JSON, default=list, nullable=True)  # [{step, ts, ok, msg_fa}]
     tailscale_ip = Column(String(64), nullable=True)
     node_role = Column(String(32), default="full")      # full (worker+local engine); reserved
+    # --- 002 full-node: engine health pin + session floating sync stamp ---
+    last_session_sync_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 

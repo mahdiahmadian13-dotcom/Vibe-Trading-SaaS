@@ -2445,6 +2445,93 @@ async def fleet_mirror(request: Request, body: FleetMirrorIn, db: AsyncSession =
 
 
 # ============================================================================
+# T008 — session floating mirror: push (write) / pull (restore) session FILES
+# ============================================================================
+
+def _session_mirror_dir() -> "Path":
+    from pathlib import Path
+    d = Path(get_settings().SESSION_MIRROR_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+async def _server_by_join_token(token: str, db) -> ServerNode:
+    s = (await db.execute(select(ServerNode).where(ServerNode.join_token == token))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "توکن گره نامعتبر است")
+    return s
+
+
+class SessionPushIn(BaseModel):
+    session_id: str
+    node: str = ""
+    files: dict = Field(default_factory=dict)  # rel path → base64
+
+
+@app.post("/api/v1/fleet/sessions/push")
+async def fleet_sessions_push(
+    request: Request, body: SessionPushIn, db: AsyncSession = Depends(get_db),
+):
+    """Worker write-through after a successful task: store session files.
+
+    X-Node-Token = the node's join_token. Files land under
+    {SESSION_MIRROR_DIR}/{session_id}/<rel path>. Size-capped at the worker.
+    """
+    token = request.headers.get("x-node-token", "")
+    server = await _server_by_join_token(token, db)
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{4,64}", body.session_id):
+        raise HTTPException(400, "شناسه سشن نامعتبر است")
+    base = _session_mirror_dir() / body.session_id
+    base.mkdir(parents=True, exist_ok=True)
+    import base64 as _b64
+    from pathlib import Path as _P
+    written = 0
+    for rel, blob in (body.files or {}).items():
+        # path-traversal guard
+        rp = _P(rel)
+        if rp.is_absolute() or ".." in rp.parts:
+            continue
+        dest = base / rp
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            dest.write_bytes(_b64.b64decode(blob))
+            written += 1
+        except Exception:
+            continue
+    if server:
+        server.last_session_sync_at = _utcnow()
+        await db.commit()
+    return {"ok": True, "session_id": body.session_id, "written": written}
+
+
+@app.get("/api/v1/fleet/sessions/pull/{session_id}")
+async def fleet_sessions_pull(
+    request: Request, session_id: str, db: AsyncSession = Depends(get_db),
+):
+    """Worker pull-on-miss: restore a session's files (base64) to the node."""
+    token = request.headers.get("x-node-token", "")
+    await _server_by_join_token(token, db)
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{4,64}", session_id):
+        raise HTTPException(400, "شناسه سشن نامعتبر است")
+    base = _session_mirror_dir() / session_id
+    if not base.is_dir():
+        raise HTTPException(404, "سشن در آینهٔ مرکز یافت نشد")
+    import base64 as _b64
+    from pathlib import Path as _P
+    files: dict = {}
+    for p in sorted(base.rglob("*")):
+        if p.is_file() and p.stat().st_size <= 2_000_000:
+            rel = str(p.relative_to(base))
+            if rel in ("session.json", "messages.jsonl") or rel.startswith(("attempts/", "run_manifest")):
+                files[rel] = _b64.b64encode(p.read_bytes()).decode()
+    if not files:
+        raise HTTPException(404, "سشن در آینهٔ مرکز خالی است")
+    return {"ok": True, "session_id": session_id, "files": files}
+
+
+# ============================================================================
 # Fleet Updater — one-click core update (engine + workers on all servers)
 # ============================================================================
 

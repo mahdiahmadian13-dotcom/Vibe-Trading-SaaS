@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     VIBE_ENGINE_URL_PUBLIC: str | None = None
     VIBE_NODE_SHARE_ENGINE_KEY: bool = False # share engine key with joined nodes
     VIBE_NODE_LOCAL_ENGINE: bool = True      # 002: workers use the node-local engine (http://engine:8899)
+    SESSION_MIRROR_DIR: str = "/app/session_mirrors"  # T008: center-side session file mirror
 
     # --- Distributed engine fleet (002): node engines build from git, LLM key ships to nodes ---
     LLM_PROVIDER: str = ""       # e.g. openai (mirrors engine agent/.env LANGCHAIN_PROVIDER)

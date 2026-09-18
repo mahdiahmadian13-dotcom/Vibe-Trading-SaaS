@@ -22,7 +22,7 @@
 
 ## Phase 2 — ورکر (local-only + write-through + pull-on-miss)
 
-- [ ] **T008 ورکر**: pull-on-miss قبل از POST (۴۰۴ لوکال → pull مرکز → نوشتن `/node-sessions/{id}/` → retry) + write-through بعد از تسک موفق (push به مرکز، best-effort — خطای sync تسک را fail نکند) + ثبت `home_node/last_synced_at`. چک: unit با انجین mock.
+- [x] **T008 ورکر**: pull-on-miss قبل از POST (۴۰۴ لوکال → pull مرکز → نوشتن `/node-sessions/{id}/` → retry) + write-through بعد از تسک موفق (push به مرکز، best-effort — خطای sync تسک را fail نکند) + ثبت `home_node/last_synced_at`. چک: unit با انجین mock. ✅ 2026-09-18 — `worker/app/main.py` (`_pull_session_on_miss`, `_push_session_to_center`, `_is_session_missing`) + مرکز `POST/GET /api/v1/fleet/sessions/push|pull/{id}` (X-Node-Token = join_token، فایل‌ها زیر `SESSION_MIRROR_DIR/{id}/`) + compose گره volume مشترک `vibe-sessions:/node-sessions`. تست‌های قراردادی: `tests/contract/test_worker_session_sync.py` + `test_session_mirror_endpoints.py` — ۵ پاس.
 - [ ] **T009 dispatcher/fallback**: گره با `engine_healthy=False` ترافیک جدید نگیرد (فیلتر مثل stale-worker) + fallback آخر `engine-primary` با هشدار پنل. چک: unit + رفتار با pool موجود.
 
 ## Phase 3 — پنل
