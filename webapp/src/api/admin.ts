@@ -68,6 +68,7 @@ export type ServerRow = {
   last_heartbeat_at: string | null; created_at: string | null;
   min_workers: number; max_workers: number; autoscale_enabled: boolean;
   engine_healthy: boolean; engine_url_local: string | null;
+  last_session_sync_at?: string | null;
   capability: Record<string, unknown> | null; capability_warning: boolean;
   provision_state: string | null; provision_step: string | null;
   tailscale_ip: string | null; node_role: string | null; has_ssh: boolean;

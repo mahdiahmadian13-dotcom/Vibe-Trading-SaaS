@@ -670,6 +670,7 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                       <td className="px-3 py-2.5 text-muted"><span dir="ltr">{s.min_workers}–{s.max_workers}</span>{s.autoscale_enabled ? <span className="mr-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-200">خودکار</span> : <span className="mr-1 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-muted">دستی</span>}</td>
                       <td className="px-3 py-2.5 text-muted">
                         <span className={s.engine_healthy ? "text-emerald-300" : "text-red-300"}>{s.engine_healthy ? "سالم" : "خراب"}</span>
+                        {s.node_role === "full" && <span className="mr-1 rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] text-sky-200" title="انجین روی همین سرور بیلد و اجرا می‌شود (Vibe_NODE_LOCAL_ENGINE)">انجین لوکال</span>}
                         {s.capability_warning && <span className="mr-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-200">سرور ضعیف</span>}
                       </td>
                       <td className="px-3 py-2.5 text-muted">{fmtFa(s.last_heartbeat_at)}</td>
@@ -927,6 +928,15 @@ docker compose -f docker-compose.worker.yml up -d --build`;
       catch (e) { setErr((e as Error).message); }
       finally { setBusy(false); }
     };
+    // T010: engine install/upgrade = full re-provision (backend supports
+    // retryProvision on ready jobs as "reinstall": new job, new engine pin).
+    const [engineBusy, setEngineBusy] = useState(false);
+    const reinstall = async () => {
+      setEngineBusy(true); setErr("");
+      try { await adminApi.retryProvision(serverId); onToast("نصب/ارتقای انجین شروع شد — لاگ نصب زیر را دنبال کنید"); const r = await adminApi.getServer(serverId); setD(r); }
+      catch (e) { setErr((e as Error).message); }
+      finally { setEngineBusy(false); }
+    };
     return (
       <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
         <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-2xl border border-white/10 bg-zinc-900 p-5 text-sm" onClick={(e) => e.stopPropagation()} dir="rtl">
@@ -955,6 +965,20 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                     ? <div className="mt-1 text-muted">تست توان: <code dir="ltr" className="rounded bg-black/40 px-1">{JSON.stringify(d.capability)}</code>{d.capability_warning && <span className="mr-1 text-amber-200">— سرور ضعیف</span>}</div>
                     : <div className="text-muted">تست توان هنوز اجرا نشده</div>}
                   <div className="text-muted">نصب: {d.provision_state ?? "—"}{d.provision_step ? ` (${d.provision_step})` : ""} · SSH: {d.has_ssh ? "ثبت شده (رمزنگاری‌شده)" : "ندارد"}</div>
+                  {d.node_role === "full" && d.has_ssh && (
+                    <div className="mt-2">
+                      <Button size="sm" variant="outline" onClick={reinstall} disabled={engineBusy || d.provision_state === "running"}>
+                        {engineBusy ? "…" : d.provision_state === "ready" ? "ارتقای انجین (نصب مجدد با پین جدید)" : "نصب انجین"}
+                      </Button>
+                      {d.provision_state === "running" && <span className="mr-2 text-[11px] text-sky-200">نصب در حال اجراست: {d.provision_step}</span>}
+                    </div>
+                  )}
+                  {d.last_session_sync_at && (
+                    (() => {
+                      const mins = (Date.now() - new Date(d.last_session_sync_at).getTime()) / 60000;
+                      return <div className="mt-1 text-muted">آخرین سینک سشن: <span className={mins > 5 ? "text-amber-200 font-bold" : "text-emerald-300"}>{mins > 5 ? `${Math.floor(mins)} دقیقه پیش` : "همین حالا"}</span></div>;
+                    })()
+                  )}
                 </div>
               </div>
               <div className="mt-3 rounded-xl border border-white/10 p-3">

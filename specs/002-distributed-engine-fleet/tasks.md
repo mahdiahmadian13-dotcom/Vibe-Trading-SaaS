@@ -27,7 +27,7 @@
 
 ## Phase 3 — پنل
 
-- [ ] **T010 پنل**: بج سلامت انجین + «آخرین سینک» در NodesTab/ServerDetailModal (آستانه زرد: سینک > ۵ دقیقه) + دکمه «نصب/ارتقای انجین» هر ۶ گره (provision موجود با قدم engine جدید). Deploy با hygiene کامل (`npm build` → `static/` → recreate → curl رشته جدید). چک: browser E2E.
+- [x] **T010 پنل**: بج سلامت انجین + «آخرین سینک» در NodesTab/ServerDetailModal (آستانه زرد: سینک > ۵ دقیقه) + دکمه «نصب/ارتقای انجین» هر ۶ گره (provision موجود با قدم engine جدید). Deploy با hygiene کامل (`npm build` → `static/` → recreate → curl رشته جدید). چک: browser E2E. ✅ 2026-09-18 — بج «انجین لوکال» در جدول سرورها (node_role=full) + دکمهٔ «نصب/ارتقای انجین» در ServerDetailModal (از retryProvision روی job آماده = نصب مجدد با پین جدید) + «آخرین سینک سشن» با آستانهٔ زرد >۵ دقیقه + `last_session_sync_at` در admin_server_detail. Deploy: `deploy-webapp.sh` (build 10.4s → recreate → healthy) و رشته‌های فارسی در باندل static تأیید شد.
 
 ## Phase 4 — رول‌اوت و E2E (روی سرور واقعی)
 
