@@ -2182,6 +2182,7 @@ async def admin_server_detail(server_id: int, admin: User = Depends(_can_dashboa
         "worker_concurrency": s.worker_concurrency, "cpu_limit": s.cpu_limit, "mem_limit": s.mem_limit,
         "docker_ok": s.docker_ok, "host_info": s.host_info,
         "engine_healthy": s.engine_healthy, "engine_url_local": s.engine_url_local,
+        "last_session_sync_at": s.last_session_sync_at.isoformat() if s.last_session_sync_at else None,
         "capability": s.capability, "capability_warning": s.capability_warning,
         "provision_state": s.provision_state, "provision_step": s.provision_step,
         "provision_log": s.provision_log or [],

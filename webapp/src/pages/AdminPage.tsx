@@ -960,6 +960,15 @@ docker compose -f docker-compose.worker.yml up -d --build`;
                 <div className="rounded-xl border border-white/10 p-3 text-xs leading-6">
                   <h4 className="mb-2 text-xs font-black text-muted">توان و سلامت</h4>
                   <div>انجین محلی: <span className={d.engine_healthy ? "text-emerald-300" : "text-red-300"}>{d.engine_healthy ? "سالم" : "خراب"}</span></div>
+                  {(() => {
+                    // T010: session-sync freshness badge — yellow when the last
+                    // write-through from this node is older than 5 minutes.
+                    const ts = (d as unknown as { last_session_sync_at?: string | null }).last_session_sync_at;
+                    if (!ts) return <div className="text-muted">آخرین سینک سشن: هرگز</div>;
+                    const ageMin = (Date.now() - new Date(ts).getTime()) / 60000;
+                    const stale = ageMin > 5;
+                    return <div className={stale ? "text-amber-200" : "text-muted"}>آخرین سینک سشن: {fmtFa(ts)}{stale ? " — بیش از ۵ دقیقه پیش" : ""}</div>;
+                  })()}
                   <div>داکر: {d.docker_ok ? "نصب است" : "نامشخص"}</div>
                   {d.capability
                     ? <div className="mt-1 text-muted">تست توان: <code dir="ltr" className="rounded bg-black/40 px-1">{JSON.stringify(d.capability)}</code>{d.capability_warning && <span className="mr-1 text-amber-200">— سرور ضعیف</span>}</div>
