@@ -2,6 +2,16 @@
 
 Multi-tenant SaaS platform wrapping [Vibe-Trading](https://github.com/HKUDS/Vibe-Trading) as a sellable product with Telegram bot, parallel workers, and horizontal scaling.
 
+> 🆕 **Full-Node Fleet v2.0 (specs/002)** — every joined server is now a FULL
+> node: the provisioning panel builds a **node-local engine straight from git**
+> (pinned `ENGINE_COMMIT`, ~10 min on 2 vCPU/4 GB), workers route to
+> `http://engine:8899` on their own box, **sessions float** between nodes
+> (write-through after task success + pull-on-miss on 404 via the center
+> mirror), the dispatcher **blocks workers whose local engine is unhealthy**
+> and falls back to the central engine with a panel warning, and the panel
+> shows a local-engine badge, an engine install/upgrade button, and a
+> session-sync freshness indicator (yellow > 5 min).
+
 ## ✨ Features
 
 > 🆕 **Server Fleet v1.9** — one-line server join (`curl | bash`) + panel-controlled
@@ -24,11 +34,12 @@ Multi-tenant SaaS platform wrapping [Vibe-Trading](https://github.com/HKUDS/Vibe
                                             │
                         ┌───────────────────┼───────────────────┐
                         ▼                   ▼                   ▼
-                  [Worker #1]         [Worker #2]         [Worker #N]
+                  [Node A]            [Node B]            [Node N]   ← full nodes
+              worker + engine     worker + engine     worker + engine
                         │                   │                   │
                         └───────────────────┼───────────────────┘
                                             ▼
-                                   [Vibe-Trading :8899]
+                          [Central engine-primary :8899]  ← fallback + session mirror
 ```
 
 ## ⚡ Quick Start
