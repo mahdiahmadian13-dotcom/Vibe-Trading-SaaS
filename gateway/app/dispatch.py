@@ -186,16 +186,24 @@ class Dispatcher:
         return min(zip(loads, cands), key=lambda p: p[0])[1]
 
     async def _blocked_server_workers(self) -> set[str]:
-        """Worker names hosted on non-routable servers (draining/offline/...)."""
+        """Worker names hosted on non-routable servers (draining/offline/...).
+
+        T009: servers with engine_healthy=False are also non-routable — a
+        node whose local engine is down cannot execute new chat tasks. The
+        reaper still rescues anything already sitting in those queues.
+        """
         try:
             from shared.models import _session_factory, ServerNode, WorkerNode
             async with _session_factory() as db:
                 rows = (await db.execute(
                     select(WorkerNode.name).join(
                         ServerNode, ServerNode.id == WorkerNode.server_id
-                    ).where(ServerNode.status.in_(
-                        ("draining", "offline", "decommissioned", "degraded")
-                    ))
+                    ).where(
+                        ServerNode.status.in_(
+                            ("draining", "offline", "decommissioned", "degraded")
+                        )
+                        | (ServerNode.engine_healthy == False)  # noqa: E712 — SQL comparison
+                    )
                 )).all()
                 return {r[0] for r in rows}
         except Exception:

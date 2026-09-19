@@ -1187,6 +1187,11 @@ docker compose -f docker-compose.worker.yml up -d --build`;
     return (
       <div className="space-y-4">
         {/* US10: fleet charts (recharts) — live load + distribution + health + live tasks */}
+        {fleet?.engine_fallback_active && (
+          <Card className="border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-6 text-amber-100">
+            ⚠️ انجین لوکال یک یا چند گره خراب است — ترافیک جدید آن گره‌ها موقتاً به انجین مرکزی (engine-primary) می‌رود. برای رفع، از تب «سرورها» دکمهٔ «نصب/ارتقای انجین» را اجرا کنید.
+          </Card>
+        )}
         {fleet && <FleetWidgets fleet={fleet} loadPts={loadPts} data={data} />}
         {/* KPI row */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-6">

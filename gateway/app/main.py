@@ -1244,12 +1244,18 @@ async def admin_fleet_live(admin: User = Depends(_can_dashboard), db: AsyncSessi
         "server": sid_name.get(wserver.get(t.worker_name or ""), "central") if t.worker_name else "central",
         "elapsed_s": round((now - (t.started_at or t.created_at)).total_seconds()) if (t.started_at or t.created_at) else None,
     } for t in live_tasks]
+    # T009: central-engine fallback warning — when ANY full node's local
+    # engine is unhealthy, new chat jobs spill to the central engine-primary
+    # queue; the panel must surface this so the user knows the central box
+    # is absorbing node traffic.
+    engine_fallback = any(not s.engine_healthy for s in servers if s.status == "online")
     return {
         "ts": now.isoformat(),
         "fleet": {"load": sum(qmap.values()), "queue": sum(qmap.values()),
                   "workers": len(wrows), "tasks_running": sum(1 for t in live_tasks if t.status == TaskStatus.RUNNING)},
         "servers": out_servers,
         "central_load": central_load,
+        "engine_fallback_active": engine_fallback,
         "tasks_live": tasks_live,
     }
 

@@ -123,6 +123,7 @@ export type FleetLive = {
   fleet: { load: number; queue: number; workers: number; tasks_running: number };
   servers: Array<{ id: number; name: string; status: string; load: number; queue: number; workers: number; engine_healthy: boolean; capability_warning: boolean }>;
   central_load: number;
+  engine_fallback_active?: boolean;
   tasks_live: Array<{ task_id: string; type: string; status: string | null; worker: string | null; server: string; elapsed_s: number | null }>;
 };
 
